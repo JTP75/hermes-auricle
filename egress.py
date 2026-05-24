@@ -127,9 +127,7 @@ class EgressController:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        self._audio_buffer.set_tts_active(True)
         await proc.wait()
-        self._audio_buffer.set_tts_active(False)
 
     async def _worker(self) -> None:
         while True:
