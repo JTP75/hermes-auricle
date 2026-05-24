@@ -72,6 +72,7 @@ def run_ingress_loop(
                 # Discard current audio frame to ignore residual wake-word slurs
                 continue
             barge_in_mute_deadline = None
+            logger.info("[auricle] barge-in mute cleared → STT active")
 
         # ── IDLE: only wakeword detection ─────────────────────────────────
         if state == State.IDLE:
@@ -109,6 +110,7 @@ def run_ingress_loop(
             # Arm deadline on first chunk after entering AWAITING_UTTERANCE
             if state == State.AWAITING_UTTERANCE and active_listen_deadline is None:
                 active_listen_deadline = time.monotonic() + active_listen_duration
+                logger.info("[auricle] active-listen window armed (%.1fs)", active_listen_duration)
 
             # Check active-listen expiry
             if state == State.AWAITING_UTTERANCE and time.monotonic() >= active_listen_deadline:
@@ -123,6 +125,7 @@ def run_ingress_loop(
             final, partial = stt_provider.feed(data)
 
             if partial and state == State.AWAITING_UTTERANCE:
+                logger.info("[auricle] speech detected → UTTERANCE")
                 active_listen_deadline = None  # speech started — cancel timer
                 fsm.transition(State.UTTERANCE)
 

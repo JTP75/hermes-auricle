@@ -338,6 +338,7 @@ class AuricleAdapter(BasePlatformAdapter):
 
     async def _dispatch(self, text: str) -> None:
         """Route a transcript or internal command to the hermes gateway."""
+        logger.info("[auricle] _dispatch: %r", text)
         if not self._message_handler:
             return
 
