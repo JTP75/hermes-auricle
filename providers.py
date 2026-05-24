@@ -76,7 +76,7 @@ class EdgeTTSProvider(TTSProvider):
             )
         cmd = (
             f"{shlex.quote(EDGE_TTS_BIN)} --voice {shlex.quote(self._voice)} "
-            f"--stream --text {shlex.quote(clean)} | "
+            f"--text {shlex.quote(clean)} --write-media - | "
             f"{shlex.quote(PW_PLAY_BIN)} --target={shlex.quote(target)} -"
         )
         return await asyncio.create_subprocess_shell(

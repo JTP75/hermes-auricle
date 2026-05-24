@@ -55,6 +55,7 @@ def run_ingress_loop(
     internal commands to the event loop via asyncio.run_coroutine_threadsafe.
     """
     active_listen_deadline: float | None = None
+    barge_in_mute_deadline: float | None = None
     stdout = arecord_proc.stdout
 
     while not stop_event.is_set():
@@ -64,6 +65,13 @@ def run_ingress_loop(
             break
 
         state = fsm.get()
+
+        # Check if we should drop frames due to fresh barge-in tail-slur
+        if barge_in_mute_deadline is not None:
+            if time.monotonic() < barge_in_mute_deadline:
+                # Discard current audio frame to ignore residual wake-word slurs
+                continue
+            barge_in_mute_deadline = None
 
         # ── IDLE: only wakeword detection ─────────────────────────────────
         if state == State.IDLE:
@@ -87,11 +95,14 @@ def run_ingress_loop(
                 logger.info("[auricle] barge-in detected (p=%.2f)", prob)
                 oww.reset()
                 stt_provider.reset()
-                egress.kill_active()
+                # Run the threadsafe abort command to cleanly decouple pending joins
+                loop.call_soon_threadsafe(egress.abort)
                 asyncio.run_coroutine_threadsafe(_set_event(barge_in_event), loop).result(timeout=1.0)
                 _play_asset_sync(ASSET_PING)
                 fsm.transition(State.AWAITING_UTTERANCE)
                 active_listen_deadline = None
+                # Set a 400ms mute window to discard audio frames during transition
+                barge_in_mute_deadline = time.monotonic() + 0.4
 
         # ── AWAITING_UTTERANCE / UTTERANCE: STT ───────────────────────────
         elif state in (State.AWAITING_UTTERANCE, State.UTTERANCE):

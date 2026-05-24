@@ -46,10 +46,33 @@ class EgressController:
         self._worker_task   = None
         self._barge_in.clear()
 
+    def abort(self) -> None:
+        """Forcefully abort the active egress playback task and clear the queue."""
+        logger.info("[auricle] aborting active egress playback")
+        self._barge_in.set()
+        self.kill_active()
+        
+        # Drain queue and mark tasks done to unlock any pending queue joins
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except (asyncio.QueueEmpty, ValueError):
+                break
+        
+        # Cancel worker thread
+        if self._worker_task and not self._worker_task.done():
+            self._worker_task.cancel()
+            self._worker_task = None
+
     def start_worker(self) -> None:
         self._worker_task = asyncio.create_task(self._worker())
 
     async def process_delta(self, cumulative_text: str, *, finalize: bool) -> None:
+        if self._barge_in.is_set():
+            logger.debug("[auricle] process_delta ignored: barge-in event is set")
+            return
+
         new_text = cumulative_text[self._processed_len:]
         self._processed_len = len(cumulative_text)
         self._text_buffer  += new_text

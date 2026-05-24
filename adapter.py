@@ -308,6 +308,10 @@ class AuricleAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
+        if self._barge_in.is_set():
+            # Drop trailing chunk edit arrivals if the current session was barged in
+            return SendResult(success=True, message_id=message_id)
+
         await self._egress.process_delta(content, finalize=finalize)
         if finalize:
             self._fsm.transition_if(State.SPEAKING, State.AWAITING_UTTERANCE)
@@ -461,7 +465,7 @@ async def _standalone_send(
         await asyncio.sleep(PROACTIVE_PRE_SPEECH_PAUSE)
         cmd = (
             f"{shlex.quote(EDGE_TTS_BIN)} --voice {shlex.quote(voice)} "
-            f"--stream --text {shlex.quote(clean)} | "
+            f"--text {shlex.quote(clean)} --write-media - | "
             f"{shlex.quote(PW_PLAY_BIN)} --target={shlex.quote(PW_PLAY_TARGET)} -"
         )
         proc = await asyncio.create_subprocess_shell(
