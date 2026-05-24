@@ -172,6 +172,7 @@ class AuricleAdapter(BasePlatformAdapter):
                 wakeword_models=[str(ww_path)],
                 melspec_model_path=str(ms_path),
                 embedding_model_path=str(emb_path),
+                inference_framework="onnx",
             )
             wakeword_key = ww_path.stem
         except Exception as exc:
@@ -185,7 +186,7 @@ class AuricleAdapter(BasePlatformAdapter):
         try:
             probe = subprocess.run(
                 ["arecord", "-D", mic_device, "-f", "S16_LE", "-c", "1",
-                 "-r", str(SAMPLE_RATE), "-t", "raw", "-d", "0.1", "-q"],
+                 "-r", str(SAMPLE_RATE), "-t", "raw", "-d", "1", "-q"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=3,
             )
             # returncode 0 or SIGTERM (-15) both mean the device exists
@@ -376,7 +377,7 @@ def check_requirements() -> bool:
     return True
 
 
-def validate_config(cfg) -> Optional[List[str]]:
+def validate_config(cfg) -> bool:
     errors = []
     vosk_path = Path(os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH)))
     if not vosk_path.exists():
@@ -392,7 +393,11 @@ def validate_config(cfg) -> Optional[List[str]]:
     missing = [str(a) for a in ALL_ASSETS if not a.exists()]
     if missing:
         errors.append(f"Missing audio assets: {', '.join(missing)}")
-    return errors or None
+    if errors:
+        for error in errors:
+            logger.warning("[auricle] validation error: %s", error)
+        return False
+    return True
 
 
 def is_connected(adapter=None) -> bool:

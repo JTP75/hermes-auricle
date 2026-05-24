@@ -34,9 +34,9 @@ DEFAULT_ACTIVE_LISTEN_DURATION   = 5       # seconds
 DEFAULT_SESSION_RESUME           = True
 DEFAULT_MUTE                     = False
 DEFAULT_VOSK_MODEL_PATH          = str(_MODELS_DIR / "vosk-model")
-DEFAULT_OWW_WAKEWORD_MODEL_PATH  = str(_MODELS_DIR / "wakeword.tflite")
-DEFAULT_OWW_MELSPEC_MODEL_PATH   = str(_MODELS_DIR / "melspectrogram.tflite")
-DEFAULT_OWW_EMBEDDING_MODEL_PATH = str(_MODELS_DIR / "embedding_model.tflite")
+DEFAULT_OWW_WAKEWORD_MODEL_PATH  = str(_MODELS_DIR / "wakeword.onnx")
+DEFAULT_OWW_MELSPEC_MODEL_PATH   = str(_MODELS_DIR / "melspectrogram.onnx")
+DEFAULT_OWW_EMBEDDING_MODEL_PATH = str(_MODELS_DIR / "embedding_model.onnx")
 
 # ── Audio ──────────────────────────────────────────────────────────────────
 AUDIO_CHUNK_BYTES = 1280   # OWW hard requirement: 40ms at 16kHz 16-bit mono

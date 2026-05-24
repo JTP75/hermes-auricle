@@ -35,13 +35,13 @@ optional_env:
     password: false
   - name: AURICLE_OWW_WAKEWORD_MODEL_PATH
     description: "Path to the openWakeWord .tflite wakeword model file"
-    prompt: "OWW wakeword model path (.tflite)"
+    prompt: "OWW wakeword model path (.onnx)"
     password: false
   - name: AURICLE_OWW_MELSPEC_MODEL_PATH
-    description: "Path to the openWakeWord melspectrogram.tflite preprocessor"
+    description: "Path to the openWakeWord melspectrogram.onnx preprocessor"
     prompt: "OWW melspectrogram model path"
     password: false
   - name: AURICLE_OWW_EMBEDDING_MODEL_PATH
-    description: "Path to the openWakeWord embedding_model.tflite preprocessor"
+    description: "Path to the openWakeWord embedding_model.onnx preprocessor"
     prompt: "OWW embedding model path"
     password: false
