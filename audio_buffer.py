@@ -1,5 +1,6 @@
 import collections
 import threading
+import time
 from typing import List
 
 
@@ -15,9 +16,11 @@ class AudioBuffer:
     period, giving vosk echo-free look-back audio on state transitions.
     """
 
-    def __init__(self, maxlen: int) -> None:
+    def __init__(self, maxlen: int, tts_tail_seconds: float = 0.0) -> None:
         self._buf: collections.deque = collections.deque(maxlen=maxlen)
         self._tts_active = False
+        self._tts_tail = tts_tail_seconds
+        self._quiet_until: float = 0.0
         self._lock = threading.Lock()
 
     def append(self, chunk: bytes) -> None:
@@ -27,11 +30,13 @@ class AudioBuffer:
     def set_tts_active(self, active: bool) -> None:
         with self._lock:
             self._tts_active = active
+            if not active:
+                self._quiet_until = time.monotonic() + self._tts_tail
 
     @property
     def tts_active(self) -> bool:
         with self._lock:
-            return self._tts_active
+            return self._tts_active or time.monotonic() < self._quiet_until
 
     def replay(self) -> List[bytes]:
         """Chunks captured after the most recent TTS-active period (echo-free)."""

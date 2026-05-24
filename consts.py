@@ -44,6 +44,7 @@ SAMPLE_RATE              = 16000
 OWW_THRESHOLD            = 0.5
 AUDIO_RING_BUFFER_SECONDS = 2.0
 AUDIO_RING_BUFFER_CHUNKS  = int(AUDIO_RING_BUFFER_SECONDS * SAMPLE_RATE * 2 / AUDIO_CHUNK_BYTES)  # 50
+TTS_ECHO_TAIL_SECONDS     = 0.15
 
 # ── Session ────────────────────────────────────────────────────────────────
 CHAT_ID           = "local"

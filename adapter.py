@@ -19,6 +19,7 @@ from gateway.platforms.base import (
 from .consts import (
     ALL_ASSETS,
     AUDIO_RING_BUFFER_CHUNKS,
+    TTS_ECHO_TAIL_SECONDS,
     ASSET_CLEARED,
     ASSET_DING,
     ASSET_ERROR,
@@ -83,7 +84,7 @@ class AuricleAdapter(BasePlatformAdapter):
         self._fsm          = FSM()
         self._barge_in     = asyncio.Event()
         self._stop_event   = threading.Event()
-        self._audio_buffer = AudioBuffer(AUDIO_RING_BUFFER_CHUNKS)
+        self._audio_buffer = AudioBuffer(AUDIO_RING_BUFFER_CHUNKS, tts_tail_seconds=TTS_ECHO_TAIL_SECONDS)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         self._stt = VoskSTTProvider(

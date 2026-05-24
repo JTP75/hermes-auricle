@@ -77,8 +77,6 @@ def run_ingress_loop(
                 logger.info("[auricle] wakeword detected (p=%.2f) → AWAITING_UTTERANCE", prob)
                 oww.reset()
                 stt_provider.reset()
-                for buffered in audio_buffer.replay():
-                    stt_provider.feed(buffered)
                 _play_asset_sync(ASSET_PING)
                 fsm.transition(State.AWAITING_UTTERANCE)
                 active_listen_deadline = None  # armed on first chunk in new state
