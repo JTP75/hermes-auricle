@@ -286,6 +286,7 @@ class AuricleAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        logger.info("[auricle] send(): %r", content[:80])
         if self._fsm.get() in (State.FATAL, State.BOOTING):
             await self._egress.play_file(ASSET_ERROR)
             return SendResult(success=False, error="adapter not connected")
@@ -312,6 +313,7 @@ class AuricleAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
+        logger.info("[auricle] edit_message(finalize=%s): %r", finalize, content[:80])
         if self._barge_in.is_set():
             # Drop trailing chunk edit arrivals if the current session was barged in
             return SendResult(success=True, message_id=message_id)
@@ -324,6 +326,7 @@ class AuricleAdapter(BasePlatformAdapter):
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         """Play a pre-synthesized audio file (hermes TTS tool path — no file attachment)."""
+        logger.info("[auricle] play_tts(): %s", audio_path)
         proc = await asyncio.create_subprocess_exec(
             PW_PLAY_BIN, f"--target={PW_PLAY_TARGET}", audio_path,
             stdout=asyncio.subprocess.DEVNULL,
