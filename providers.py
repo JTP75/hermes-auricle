@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -83,4 +84,5 @@ class EdgeTTSProvider(TTSProvider):
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
         )

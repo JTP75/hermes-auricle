@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import re
+import signal
 from pathlib import Path
 from typing import Optional
 
@@ -98,13 +100,18 @@ class EgressController:
                 self._worker_task.cancel()
 
     def kill_active(self) -> None:
-        """Kill the current pw-play process. Safe to call from any thread."""
+        """Kill the current pw-play process group. Safe to call from any thread."""
         proc = self._active_proc
         if proc is not None:
             try:
-                proc.kill()
+                # Forcefully terminate the entire process group (shell, edge-tts and pw-play pipeline)
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, OSError):
-                pass
+                # Fallback to direct kill if process group lookup fails
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     async def play_file(self, path: Path) -> None:
         """Play a WAV asset file directly (for ding/ping/bong/etc.)."""
