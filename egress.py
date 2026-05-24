@@ -128,28 +128,6 @@ class EgressController:
             preexec_fn=os.setsid,
         )
 
-    async def _stream_to_play(self, sentence: str) -> asyncio.subprocess.Process:
-        """Spawn pw-play and pipe edge-tts chunks to it as they arrive (lower first-word latency)."""
-        proc = await self._spawn_pw_play()
-
-        async def _pipe() -> None:
-            try:
-                async for chunk in self._tts.stream_audio(sentence):
-                    if self._barge_in.is_set():
-                        break
-                    proc.stdin.write(chunk)
-                    await proc.stdin.drain()
-            except Exception as exc:
-                logger.error("[auricle] TTS stream error: %s", exc)
-            finally:
-                try:
-                    proc.stdin.close()
-                except Exception:
-                    pass
-
-        asyncio.create_task(_pipe())
-        return proc
-
     async def _fetch_audio(self, sentence: str) -> bytes:
         """Collect all edge-tts audio bytes for a sentence into memory."""
         chunks: list[bytes] = []
@@ -179,10 +157,10 @@ class EgressController:
         await proc.wait()
 
     async def _worker(self) -> None:
-        # lookahead: a sentence already dequeued but not yet played.
+        # lookahead: a sentence already dequeued (and its audio prefetched) but not yet played.
         # _NO_LOOKAHEAD = nothing pending; None = the end-of-turn sentinel was peeked.
         lookahead = _NO_LOOKAHEAD
-        prefetch_bytes: Optional[bytes] = None  # pre-fetched audio for lookahead sentence
+        prefetch_bytes: Optional[bytes] = None
 
         while True:
             # ── barge-in ──────────────────────────────────────────────────
@@ -212,12 +190,9 @@ class EgressController:
 
             # ── play current sentence ─────────────────────────────────────
             try:
-                if audio:
-                    # Pre-fetched: pw-play starts immediately, no network wait
-                    proc = await self._play_audio_bytes(audio)
-                else:
-                    # Stream directly: pw-play starts on first MP3 chunk (~200ms)
-                    proc = await self._stream_to_play(sentence)
+                if not audio:
+                    audio = await self._fetch_audio(sentence)
+                proc = await self._play_audio_bytes(audio)
 
                 self._active_proc = proc
                 self._audio_buffer.set_tts_active(True)
