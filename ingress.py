@@ -43,7 +43,6 @@ def run_ingress_loop(
     loop: asyncio.AbstractEventLoop,
     dispatch_fn: Callable[[str], Coroutine],
     stop_event: threading.Event,
-    barge_in_event: asyncio.Event,
     active_listen_duration: float,
     oww_threshold: float,
 ) -> None:
@@ -55,7 +54,6 @@ def run_ingress_loop(
     internal commands to the event loop via asyncio.run_coroutine_threadsafe.
     """
     active_listen_deadline: float | None = None
-    barge_in_mute_deadline: float | None = None
     stdout = arecord_proc.stdout
 
     while not stop_event.is_set():
@@ -65,15 +63,6 @@ def run_ingress_loop(
             break
 
         state = fsm.get()
-
-        # Check if we should drop frames due to fresh barge-in tail-slur
-        if barge_in_mute_deadline is not None:
-            if time.monotonic() < barge_in_mute_deadline:
-                # Discard current audio frame to ignore residual wake-word slurs
-                continue
-            barge_in_mute_deadline = None
-            _rms = int(np.sqrt(np.mean(np.frombuffer(data, dtype=np.int16).astype(np.float32) ** 2)))
-            logger.info("[auricle] barge-in mute cleared → STT active (rms=%d)", _rms)
 
         # ── IDLE: only wakeword detection ─────────────────────────────────
         if state == State.IDLE:
@@ -97,14 +86,11 @@ def run_ingress_loop(
                 logger.info("[auricle] barge-in detected (p=%.2f)", prob)
                 oww.reset()
                 stt_provider.reset()
-                # Run the threadsafe abort command to cleanly decouple pending joins
                 loop.call_soon_threadsafe(egress.abort)
-                asyncio.run_coroutine_threadsafe(_set_event(barge_in_event), loop).result(timeout=1.0)
-                _play_asset_sync(ASSET_PING)
+                # Play ping async so ingress starts listening immediately
+                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(egress.play_file(ASSET_PING)))
                 fsm.transition(State.AWAITING_UTTERANCE)
                 active_listen_deadline = None
-                # Set a 400ms mute window to discard audio frames during transition
-                barge_in_mute_deadline = time.monotonic() + 0.4
 
         # ── AWAITING_UTTERANCE / UTTERANCE: STT ───────────────────────────
         elif state in (State.AWAITING_UTTERANCE, State.UTTERANCE):
@@ -140,10 +126,6 @@ def run_ingress_loop(
         # ── DISPATCHED: agent is running, nothing to do here ──────────────
         elif state in (State.DISPATCHED, State.BOOTING, State.FATAL):
             pass
-
-
-async def _set_event(event: asyncio.Event) -> None:
-    event.set()
 
 
 def _handle_transcript(

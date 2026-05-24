@@ -222,7 +222,6 @@ class AuricleAdapter(BasePlatformAdapter):
                 loop=self._loop,
                 dispatch_fn=self._dispatch,
                 stop_event=self._stop_event,
-                barge_in_event=self._barge_in,
                 active_listen_duration=self._active_listen_duration,
                 oww_threshold=OWW_THRESHOLD,
             ),
