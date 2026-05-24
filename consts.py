@@ -39,9 +39,11 @@ DEFAULT_OWW_MELSPEC_MODEL_PATH   = str(_MODELS_DIR / "melspectrogram.onnx")
 DEFAULT_OWW_EMBEDDING_MODEL_PATH = str(_MODELS_DIR / "embedding_model.onnx")
 
 # ── Audio ──────────────────────────────────────────────────────────────────
-AUDIO_CHUNK_BYTES = 1280   # OWW hard requirement: 40ms at 16kHz 16-bit mono
-SAMPLE_RATE       = 16000
-OWW_THRESHOLD     = 0.5
+AUDIO_CHUNK_BYTES        = 1280   # OWW hard requirement: 40ms at 16kHz 16-bit mono
+SAMPLE_RATE              = 16000
+OWW_THRESHOLD            = 0.5
+AUDIO_RING_BUFFER_SECONDS = 2.0
+AUDIO_RING_BUFFER_CHUNKS  = int(AUDIO_RING_BUFFER_SECONDS * SAMPLE_RATE * 2 / AUDIO_CHUNK_BYTES)  # 50
 
 # ── Session ────────────────────────────────────────────────────────────────
 CHAT_ID           = "local"

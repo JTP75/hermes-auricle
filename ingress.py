@@ -7,6 +7,7 @@ from typing import Callable, Coroutine
 
 import numpy as np
 
+from .audio_buffer import AudioBuffer
 from .consts import (
     AUDIO_CHUNK_BYTES,
     ASSET_BONG,
@@ -39,6 +40,7 @@ def run_ingress_loop(
     wakeword_key: str,
     stt_provider,
     egress,
+    audio_buffer: AudioBuffer,
     fsm: FSM,
     loop: asyncio.AbstractEventLoop,
     dispatch_fn: Callable[[str], Coroutine],
@@ -62,6 +64,7 @@ def run_ingress_loop(
             logger.error("[auricle] arecord closed unexpectedly — ingress exiting")
             break
 
+        audio_buffer.append(data)
         state = fsm.get()
 
         # ── IDLE: only wakeword detection ─────────────────────────────────
@@ -74,6 +77,8 @@ def run_ingress_loop(
                 logger.info("[auricle] wakeword detected (p=%.2f) → AWAITING_UTTERANCE", prob)
                 oww.reset()
                 stt_provider.reset()
+                for buffered in audio_buffer.replay():
+                    stt_provider.feed(buffered)
                 _play_asset_sync(ASSET_PING)
                 fsm.transition(State.AWAITING_UTTERANCE)
                 active_listen_deadline = None  # armed on first chunk in new state
@@ -109,7 +114,10 @@ def run_ingress_loop(
                 active_listen_deadline = None
                 continue
 
-            final, partial = stt_provider.feed(data)
+            if audio_buffer.tts_active:
+                final, partial = None, None
+            else:
+                final, partial = stt_provider.feed(data)
 
             if partial and state == State.AWAITING_UTTERANCE:
                 logger.info("[auricle] speech detected → UTTERANCE")

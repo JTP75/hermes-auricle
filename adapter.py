@@ -18,6 +18,7 @@ from gateway.platforms.base import (
 
 from .consts import (
     ALL_ASSETS,
+    AUDIO_RING_BUFFER_CHUNKS,
     ASSET_CLEARED,
     ASSET_DING,
     ASSET_ERROR,
@@ -55,6 +56,7 @@ from .consts import (
     _CMD_CLEAR,
     _CMD_STOP,
 )
+from .audio_buffer import AudioBuffer
 from .egress import EgressController
 from .fsm import FSM, State
 from .ingress import run_ingress_loop
@@ -78,16 +80,17 @@ class AuricleAdapter(BasePlatformAdapter):
     def __init__(self, config) -> None:
         super().__init__(config, Platform("auricle"))
 
-        self._fsm        = FSM()
-        self._barge_in   = asyncio.Event()
-        self._stop_event = threading.Event()
+        self._fsm          = FSM()
+        self._barge_in     = asyncio.Event()
+        self._stop_event   = threading.Event()
+        self._audio_buffer = AudioBuffer(AUDIO_RING_BUFFER_CHUNKS)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         self._stt = VoskSTTProvider(
             os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH))
         )
         self._tts    = EdgeTTSProvider(os.getenv(ENV_TTS_VOICE, DEFAULT_TTS_VOICE))
-        self._egress = EgressController(self._tts, self._barge_in)
+        self._egress = EgressController(self._tts, self._barge_in, self._audio_buffer)
 
         self._fsm.muted = _parse_bool(os.getenv(ENV_MUTE, str(DEFAULT_MUTE)))
         self._session_resume = _parse_bool(os.getenv(ENV_SESSION_RESUME, str(DEFAULT_SESSION_RESUME)))
@@ -218,6 +221,7 @@ class AuricleAdapter(BasePlatformAdapter):
                 wakeword_key=wakeword_key,
                 stt_provider=self._stt,
                 egress=self._egress,
+                audio_buffer=self._audio_buffer,
                 fsm=self._fsm,
                 loop=self._loop,
                 dispatch_fn=self._dispatch,

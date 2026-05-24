@@ -6,6 +6,7 @@ import signal
 from pathlib import Path
 from typing import Optional
 
+from .audio_buffer import AudioBuffer
 from .consts import PW_PLAY_BIN, PW_PLAY_TARGET
 
 logger = logging.getLogger(__name__)
@@ -30,9 +31,11 @@ class EgressController:
         self,
         tts_provider,
         barge_in_event: asyncio.Event,
+        audio_buffer: AudioBuffer,
     ) -> None:
-        self._tts        = tts_provider
-        self._barge_in   = barge_in_event
+        self._tts          = tts_provider
+        self._barge_in     = barge_in_event
+        self._audio_buffer = audio_buffer
 
         self._processed_len: int                              = 0
         self._text_buffer:   str                              = ""
@@ -47,11 +50,13 @@ class EgressController:
         self._active_proc   = None
         self._worker_task   = None
         self._barge_in.clear()
+        self._audio_buffer.set_tts_active(False)
 
     def abort(self) -> None:
         """Forcefully abort the active egress playback task and clear the queue."""
         logger.info("[auricle] aborting active egress playback")
         self._barge_in.set()
+        self._audio_buffer.set_tts_active(False)
         self.kill_active()
         
         # Drain queue and mark tasks done to unlock any pending queue joins
@@ -122,7 +127,9 @@ class EgressController:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        self._audio_buffer.set_tts_active(True)
         await proc.wait()
+        self._audio_buffer.set_tts_active(False)
 
     async def _worker(self) -> None:
         while True:
@@ -144,10 +151,12 @@ class EgressController:
             try:
                 proc = await self._tts.synthesize(sentence, PW_PLAY_TARGET)
                 self._active_proc = proc
+                self._audio_buffer.set_tts_active(True)
                 await proc.wait()
             except Exception as exc:
                 logger.error("[auricle] TTS playback error: %s", exc)
             finally:
+                self._audio_buffer.set_tts_active(False)
                 self._active_proc = None
                 self._queue.task_done()
 
