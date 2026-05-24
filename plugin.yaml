@@ -1,0 +1,47 @@
+name: hermes-auricle
+label: Auricle
+kind: platform
+version: 0.1.0
+description: >
+  Local voice platform for hermes. Wakeword + STT on the mic,
+  TTS on the speaker. Designed for Raspberry Pi + Jabra Speak 510 USB.
+  All audio processing is fully local — no cloud STT or TTS.
+author: Justin Pacella
+
+optional_env:
+  - name: AURICLE_MIC_DEVICE
+    description: "ALSA device string for arecord (default: plughw:3,0)"
+    prompt: "Mic device"
+    password: false
+  - name: AURICLE_TTS_VOICE
+    description: "edge-tts voice name (default: en-GB-LibbyNeural)"
+    prompt: "TTS voice"
+    password: false
+  - name: AURICLE_ACTIVE_LISTEN_DURATION
+    description: "Seconds of active-listen window after TTS ends (default: 5)"
+    prompt: "Active-listen duration (seconds)"
+    password: false
+  - name: AURICLE_SESSION_RESUME
+    description: "Resume existing session on hermes restart (default: true)"
+    prompt: "Resume session on restart? (true/false)"
+    password: false
+  - name: AURICLE_MUTE
+    description: "Disable mic wakeword path on startup (default: false)"
+    prompt: "Start muted? (true/false)"
+    password: false
+  - name: AURICLE_VOSK_MODEL_PATH
+    description: "Path to the vosk model directory"
+    prompt: "Vosk model path"
+    password: false
+  - name: AURICLE_OWW_WAKEWORD_MODEL_PATH
+    description: "Path to the openWakeWord .tflite wakeword model file"
+    prompt: "OWW wakeword model path (.tflite)"
+    password: false
+  - name: AURICLE_OWW_MELSPEC_MODEL_PATH
+    description: "Path to the openWakeWord melspectrogram.tflite preprocessor"
+    prompt: "OWW melspectrogram model path"
+    password: false
+  - name: AURICLE_OWW_EMBEDDING_MODEL_PATH
+    description: "Path to the openWakeWord embedding_model.tflite preprocessor"
+    prompt: "OWW embedding model path"
+    password: false
