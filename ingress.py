@@ -72,7 +72,8 @@ def run_ingress_loop(
                 # Discard current audio frame to ignore residual wake-word slurs
                 continue
             barge_in_mute_deadline = None
-            logger.info("[auricle] barge-in mute cleared → STT active")
+            _rms = int(np.sqrt(np.mean(np.frombuffer(data, dtype=np.int16).astype(np.float32) ** 2)))
+            logger.info("[auricle] barge-in mute cleared → STT active (rms=%d)", _rms)
 
         # ── IDLE: only wakeword detection ─────────────────────────────────
         if state == State.IDLE:
