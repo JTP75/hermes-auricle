@@ -146,6 +146,7 @@ class EgressController:
 
             if sentence is None:
                 self._queue.task_done()
+                logger.info("[auricle] TTS turn complete")
                 break
 
             try:
