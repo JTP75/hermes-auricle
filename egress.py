@@ -11,12 +11,12 @@ from .consts import PW_PLAY_BIN, PW_PLAY_TARGET
 
 logger = logging.getLogger(__name__)
 
-_SENTENCE_BOUNDARY = re.compile(r'(?<=[.?!])\s+|\n+')
+_TEXT_STREAM_DELIMITER = re.compile(r'\n+')
 _NO_LOOKAHEAD = object()  # sentinel: no prefetched sentence waiting
 
 
 def _segment(text: str) -> list[str]:
-    return [s.strip() for s in _SENTENCE_BOUNDARY.split(text) if s.strip()]
+    return [s.strip() for s in _TEXT_STREAM_DELIMITER.split(text) if s.strip()]
 
 
 class EgressController:
