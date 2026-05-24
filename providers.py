@@ -1,13 +1,11 @@
-import asyncio
 import json
-import os
 import re
-import shlex
-import subprocess
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import AsyncIterator, Optional, Tuple
 
-from .consts import EDGE_TTS_BIN, PW_PLAY_BIN, SAMPLE_RATE
+import edge_tts
+
+from .consts import SAMPLE_RATE
 
 _MARKDOWN_RE = re.compile(r'[*_`#\[\]()]')
 
@@ -30,8 +28,8 @@ class STTProvider(ABC):
 
 class TTSProvider(ABC):
     @abstractmethod
-    async def synthesize(self, sentence: str, target: str) -> asyncio.subprocess.Process:
-        """Spawn synthesis+playback. Returns the process handle so barge-in can kill it."""
+    def stream_audio(self, sentence: str) -> AsyncIterator[bytes]:
+        """Yield raw MP3 bytes for the sentence as they arrive from the TTS service."""
 
 
 # ── Vosk STT ───────────────────────────────────────────────────────────────
@@ -66,23 +64,11 @@ class EdgeTTSProvider(TTSProvider):
     def __init__(self, voice: str) -> None:
         self._voice = voice
 
-    async def synthesize(self, sentence: str, target: str) -> asyncio.subprocess.Process:
+    async def stream_audio(self, sentence: str) -> AsyncIterator[bytes]:
         clean = _MARKDOWN_RE.sub("", sentence).strip()
         if not clean:
-            # Return a no-op process: nothing to synthesize
-            return await asyncio.create_subprocess_exec(
-                "true",
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        cmd = (
-            f"{shlex.quote(EDGE_TTS_BIN)} --voice {shlex.quote(self._voice)} "
-            f"--text {shlex.quote(clean)} --write-media - | "
-            f"{shlex.quote(PW_PLAY_BIN)} --target={shlex.quote(target)} -"
-        )
-        return await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            preexec_fn=os.setsid,
-        )
+            return
+        communicate = edge_tts.Communicate(clean, self._voice)
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                yield chunk["data"]

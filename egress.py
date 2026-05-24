@@ -12,6 +12,7 @@ from .consts import PW_PLAY_BIN, PW_PLAY_TARGET
 logger = logging.getLogger(__name__)
 
 _SENTENCE_BOUNDARY = re.compile(r'(?<=[.?!])\s+|\n+')
+_NO_LOOKAHEAD = object()  # sentinel: no prefetched sentence waiting
 
 
 def _segment(text: str) -> list[str]:
@@ -105,18 +106,66 @@ class EgressController:
                 self._worker_task.cancel()
 
     def kill_active(self) -> None:
-        """Kill the current pw-play process group. Safe to call from any thread."""
+        """Kill the active pw-play process. Safe to call from any thread."""
         proc = self._active_proc
         if proc is not None:
             try:
-                # Forcefully terminate the entire process group (shell, edge-tts and pw-play pipeline)
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, OSError):
-                # Fallback to direct kill if process group lookup fails
                 try:
                     proc.kill()
                 except Exception:
                     pass
+
+    async def _spawn_pw_play(self) -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
+            PW_PLAY_BIN,
+            f"--target={PW_PLAY_TARGET}",
+            "-",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+
+    async def _stream_to_play(self, sentence: str) -> asyncio.subprocess.Process:
+        """Spawn pw-play and pipe edge-tts chunks to it as they arrive (lower first-word latency)."""
+        proc = await self._spawn_pw_play()
+
+        async def _pipe() -> None:
+            try:
+                async for chunk in self._tts.stream_audio(sentence):
+                    if self._barge_in.is_set():
+                        break
+                    proc.stdin.write(chunk)
+                    await proc.stdin.drain()
+            except Exception as exc:
+                logger.error("[auricle] TTS stream error: %s", exc)
+            finally:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+
+        asyncio.create_task(_pipe())
+        return proc
+
+    async def _fetch_audio(self, sentence: str) -> bytes:
+        """Collect all edge-tts audio bytes for a sentence into memory."""
+        chunks: list[bytes] = []
+        async for chunk in self._tts.stream_audio(sentence):
+            if self._barge_in.is_set():
+                return b""
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    async def _play_audio_bytes(self, audio: bytes) -> asyncio.subprocess.Process:
+        """Spawn pw-play with pre-fetched audio bytes (zero-gap between sentences)."""
+        proc = await self._spawn_pw_play()
+        proc.stdin.write(audio)
+        await proc.stdin.drain()
+        proc.stdin.close()
+        return proc
 
     async def play_file(self, path: Path) -> None:
         """Play a WAV asset file directly (for ding/ping/bong/etc.)."""
@@ -130,12 +179,26 @@ class EgressController:
         await proc.wait()
 
     async def _worker(self) -> None:
+        # lookahead: a sentence already dequeued but not yet played.
+        # _NO_LOOKAHEAD = nothing pending; None = the end-of-turn sentinel was peeked.
+        lookahead = _NO_LOOKAHEAD
+        prefetch_bytes: Optional[bytes] = None  # pre-fetched audio for lookahead sentence
+
         while True:
+            # ── barge-in ──────────────────────────────────────────────────
             if self._barge_in.is_set():
+                if lookahead is not _NO_LOOKAHEAD:
+                    self._queue.task_done()
                 self._drain()
                 break
 
-            sentence = await self._queue.get()
+            # ── get sentence (from lookahead or queue) ────────────────────
+            if lookahead is not _NO_LOOKAHEAD:
+                sentence, audio = lookahead, prefetch_bytes
+                lookahead, prefetch_bytes = _NO_LOOKAHEAD, None
+            else:
+                sentence = await self._queue.get()
+                audio = None
 
             if self._barge_in.is_set():
                 self._queue.task_done()
@@ -147,11 +210,44 @@ class EgressController:
                 logger.info("[auricle] TTS turn complete")
                 break
 
+            # ── play current sentence ─────────────────────────────────────
             try:
-                proc = await self._tts.synthesize(sentence, PW_PLAY_TARGET)
+                if audio:
+                    # Pre-fetched: pw-play starts immediately, no network wait
+                    proc = await self._play_audio_bytes(audio)
+                else:
+                    # Stream directly: pw-play starts on first MP3 chunk (~200ms)
+                    proc = await self._stream_to_play(sentence)
+
                 self._active_proc = proc
                 self._audio_buffer.set_tts_active(True)
-                await proc.wait()
+
+                play_task     = asyncio.create_task(proc.wait())
+                get_next_task = asyncio.create_task(self._queue.get())
+
+                done, _ = await asyncio.wait(
+                    [play_task, get_next_task], return_when=asyncio.FIRST_COMPLETED
+                )
+
+                if get_next_task in done:
+                    next_item = get_next_task.result()
+                    lookahead = next_item
+                    if next_item is not None and not self._barge_in.is_set():
+                        # Prefetch next sentence's audio concurrently with current playback
+                        fetched, _ = await asyncio.gather(
+                            self._fetch_audio(next_item),
+                            play_task,
+                            return_exceptions=True,
+                        )
+                        prefetch_bytes = fetched if isinstance(fetched, bytes) else None
+                    else:
+                        await play_task
+                        prefetch_bytes = None
+                else:
+                    # Playback finished before next sentence queued; cancel the peek
+                    get_next_task.cancel()
+                    await asyncio.gather(get_next_task, return_exceptions=True)
+
             except Exception as exc:
                 logger.error("[auricle] TTS playback error: %s", exc)
             finally:
