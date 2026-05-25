@@ -165,9 +165,20 @@ def run_ingress_loop(
                 else:
                     consecutive_misinputs = 0
 
-        # ── DISPATCHED: agent is running, nothing to do here ──────────────
+        # ── DISPATCHED: agent is running, watch for wakeword to re-interrupt ─
         elif state in (State.DISPATCHED, State.BOOTING, State.FATAL):
             was_idle = False
+            if state == State.DISPATCHED:
+                audio = np.frombuffer(data, dtype=np.int16)
+                prob  = oww.predict(audio).get(wakeword_key, 0.0)
+                if prob >= oww_threshold:
+                    logger.info("[auricle] wakeword during dispatch (p=%.2f) → AWAITING_UTTERANCE", prob)
+                    oww.reset()
+                    stt_provider.reset()
+                    loop.call_soon_threadsafe(egress.abort)
+                    loop.call_soon_threadsafe(lambda: asyncio.ensure_future(egress.play_file(ASSET_WAKEUP)))
+                    fsm.transition(State.AWAITING_UTTERANCE)
+                    active_listen_deadline = None
 
 
 def _handle_transcript(
