@@ -336,6 +336,19 @@ class AuricleAdapter(BasePlatformAdapter):
         await proc.wait()
         return SendResult(success=True)
 
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata=None,
+    ) -> SendResult:
+        """Auto-decline dangerous commands — voice has no approval UI."""
+        from tools.approval import resolve_gateway_approval
+        resolve_gateway_approval(session_key, "deny")
+        return SendResult(success=True)
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         pass  # no typing indicator on a voice device
 
