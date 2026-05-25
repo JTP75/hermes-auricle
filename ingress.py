@@ -10,9 +10,12 @@ import numpy as np
 from .audio_buffer import AudioBuffer
 from .consts import (
     AUDIO_CHUNK_BYTES,
+    ASSET_CONFUSED,
     ASSET_TOSLEEP,
     ASSET_WAKEUP,
     CLEAR_COMMANDS,
+    MISINPUT_MAX_CONSECUTIVE,
+    MISINPUT_PHRASES,
     STOP_COMMANDS,
     PW_PLAY_BIN,
     PW_PLAY_TARGET,
@@ -56,6 +59,7 @@ def run_ingress_loop(
     internal commands to the event loop via asyncio.run_coroutine_threadsafe.
     """
     active_listen_deadline: float | None = None
+    consecutive_misinputs: int = 0
     stdout = arecord_proc.stdout
 
     while not stop_event.is_set():
@@ -127,7 +131,20 @@ def run_ingress_loop(
                 active_listen_deadline = None
                 oww.reset()
                 stt_provider.reset()
-                _handle_transcript(final, fsm, loop, dispatch_fn)
+                if _handle_transcript(final, fsm, loop, dispatch_fn):
+                    consecutive_misinputs += 1
+                    if consecutive_misinputs >= MISINPUT_MAX_CONSECUTIVE:
+                        logger.info("[auricle] misinput limit reached → IDLE")
+                        _play_asset_sync(ASSET_TOSLEEP)
+                        fsm.transition(State.IDLE)
+                        consecutive_misinputs = 0
+                    else:
+                        logger.info("[auricle] misinput %d/%d → AWAITING_UTTERANCE",
+                                    consecutive_misinputs, MISINPUT_MAX_CONSECUTIVE)
+                        _play_asset_sync(ASSET_CONFUSED)
+                        fsm.transition(State.AWAITING_UTTERANCE)
+                else:
+                    consecutive_misinputs = 0
 
         # ── DISPATCHED: agent is running, nothing to do here ──────────────
         elif state in (State.DISPATCHED, State.BOOTING, State.FATAL):
@@ -139,20 +156,26 @@ def _handle_transcript(
     fsm: FSM,
     loop: asyncio.AbstractEventLoop,
     dispatch_fn: Callable[[str], Coroutine],
-) -> None:
+) -> bool:
+    """Handle a finalized transcript. Returns True if it was a misinput (caller handles FSM/sound)."""
     lower = text.lower().strip()
+
+    if lower in MISINPUT_PHRASES:
+        logger.info("[auricle] misinput detected: %r", text)
+        return True
 
     if lower in CLEAR_COMMANDS:
         logger.info("[auricle] command: clear")
         fsm.transition(State.IDLE)
         asyncio.run_coroutine_threadsafe(dispatch_fn(_CMD_CLEAR), loop)
-        return
+        return False
 
     if lower in STOP_COMMANDS:
         logger.info("[auricle] command: stop")
         fsm.transition(State.IDLE)
         asyncio.run_coroutine_threadsafe(dispatch_fn(_CMD_STOP), loop)
-        return
+        return False
 
     fsm.transition(State.DISPATCHED)
     asyncio.run_coroutine_threadsafe(dispatch_fn(text), loop)
+    return False

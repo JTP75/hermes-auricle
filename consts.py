@@ -6,13 +6,36 @@ _PLUGIN_DIR = Path(__file__).parent
 ASSETS_DIR  = _PLUGIN_DIR / "assets"
 _MODELS_DIR = _PLUGIN_DIR / "models"
 
-ASSET_WAKEUP  = ASSETS_DIR / "auricle-wakeup.wav"
-ASSET_TOSLEEP = ASSETS_DIR / "auricle-tosleep.wav"
-ASSET_NOTIFY  = ASSETS_DIR / "auricle-notify.wav"
-ALL_ASSETS: Tuple[Path, ...] = (ASSET_WAKEUP, ASSET_TOSLEEP, ASSET_NOTIFY)
+ASSET_WAKEUP   = ASSETS_DIR / "auricle-wakeup.wav"
+ASSET_TOSLEEP  = ASSETS_DIR / "auricle-tosleep.wav"
+ASSET_NOTIFY   = ASSETS_DIR / "auricle-notify.wav"
+ASSET_CONFUSED = ASSETS_DIR / "auricle-confused.wav"
+ALL_ASSETS: Tuple[Path, ...] = (ASSET_WAKEUP, ASSET_TOSLEEP, ASSET_NOTIFY, ASSET_CONFUSED)
 
 TTS_CLEARED = "Session cleared."
 TTS_ERROR   = "Something went wrong."
+
+# ── Misinput guard ─────────────────────────────────────────────────────────
+MISINPUT_MAX_CONSECUTIVE = 2
+
+MISINPUT_PHRASES: frozenset[str] = frozenset({
+    # Articles
+    "the", "a", "an",
+    # Possessive determiners
+    "my", "your", "his", "her", "its", "their", "our",
+    # Prepositions
+    "of", "in", "on", "at", "to", "for", "from", "with", "by", "about",
+    # Conjunctions
+    "and", "or", "but", "if", "so",
+    # Bare subject pronouns
+    "i", "he", "she", "it", "we", "they",
+    # Dangling contractions
+    "it's", "he's", "she's", "that's", "there's", "what's", "who's",
+    "they're", "we're", "i'm", "i've", "i'd", "i'll", "you're",
+    # Two-word mid-sentence fragments (conjunction/preposition + article)
+    "and the", "or the", "but the",
+    "in the", "on the", "of the", "to the", "for the",
+})
 
 # ── Env var names ──────────────────────────────────────────────────────────
 ENV_MIC_DEVICE               = "AURICLE_MIC_DEVICE"
