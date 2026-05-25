@@ -156,9 +156,16 @@ class EgressController:
         )
         await proc.wait()
 
-    async def speak(self, text: str) -> None:
-        """Synthesize and play a short phrase immediately, outside the worker queue."""
-        audio = await self._fetch_audio(text)
+    async def speak(self, text: str, *, priority: bool = False) -> None:
+        """Synthesize and play a short phrase immediately, outside the worker queue.
+        priority=True bypasses barge-in gating (for error/cleared system phrases)."""
+        if priority:
+            chunks: list[bytes] = []
+            async for chunk in self._tts.stream_audio(text):
+                chunks.append(chunk)
+            audio = b"".join(chunks)
+        else:
+            audio = await self._fetch_audio(text)
         if audio:
             proc = await self._play_audio_bytes(audio)
             await proc.wait()

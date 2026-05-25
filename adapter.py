@@ -290,7 +290,7 @@ class AuricleAdapter(BasePlatformAdapter):
     ) -> SendResult:
         logger.info("[auricle] send(): %r", content[:80])
         if self._fsm.get() in (State.FATAL, State.BOOTING):
-            await self._egress.speak(TTS_ERROR)
+            await self._egress.speak(TTS_ERROR, priority=True)
             return SendResult(success=False, error="adapter not connected")
 
         verdict = self._classifier.classify(content)
@@ -369,7 +369,7 @@ class AuricleAdapter(BasePlatformAdapter):
             await self.handle_message(self._make_event("/new", internal=True))
 
         if text == _CMD_CLEAR:
-            await self._egress.speak(TTS_CLEARED)
+            await self._egress.speak(TTS_CLEARED, priority=True)
             self._classifier.expect_command_response()
             await self.handle_message(self._make_event("/new", internal=True))
             return
