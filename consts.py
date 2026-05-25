@@ -94,7 +94,7 @@ PW_PLAY_BIN    = "pw-play"
 PW_PLAY_TARGET = "Jabra SPEAK 510 USB"
 
 # ── Voice commands (exact whole-transcript match, case-insensitive) ─────────
-CLEAR_COMMANDS: Tuple[str, ...] = ("clear", "reset")
+CLEAR_COMMANDS: Tuple[str, ...] = ("clear", "reset", "it's clear", "its clear")
 STOP_COMMANDS:  Tuple[str, ...] = ("stop",)
 
 # ── Internal dispatch sentinels ────────────────────────────────────────────
