@@ -45,3 +45,15 @@ optional_env:
     description: "Path to the openWakeWord embedding_model.onnx preprocessor"
     prompt: "OWW embedding model path"
     password: false
+  - name: AURICLE_SLEEP_TIMEOUT
+    description: "Seconds of IDLE silence before auto-sleep (default: 60)"
+    prompt: "Auto-sleep timeout (seconds)"
+    password: false
+  - name: AURICLE_SLEEP_WAKE_SENSITIVITY
+    description: "Flux multiplier over baseline to wake from sleep; lower = more sensitive (default: 3.0)"
+    prompt: "Sleep wake sensitivity"
+    password: false
+  - name: AURICLE_SLEEP_FLUX_THRESHOLD
+    description: "Normalized flux EMA cutoff for 'quiet' classification (default: 0.02)"
+    prompt: "Sleep flux threshold"
+    password: false

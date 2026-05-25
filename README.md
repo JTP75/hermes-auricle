@@ -68,6 +68,9 @@ All settings live under `gateway.auricle` in `~/.hermes/config.yaml`. Env vars t
 | `oww_wakeword_model_path` | `AURICLE_OWW_WAKEWORD_MODEL_PATH` | `models/wakeword.tflite` | Path to OWW wakeword `.tflite` |
 | `oww_melspec_model_path` | `AURICLE_OWW_MELSPEC_MODEL_PATH` | `models/melspectrogram.tflite` | Path to OWW melspec preprocessor |
 | `oww_embedding_model_path` | `AURICLE_OWW_EMBEDDING_MODEL_PATH` | `models/embedding_model.tflite` | Path to OWW embedding preprocessor |
+| `sleep_timeout` | `AURICLE_SLEEP_TIMEOUT` | `60` | Seconds of IDLE silence before auto-sleep |
+| `sleep_wake_sensitivity` | `AURICLE_SLEEP_WAKE_SENSITIVITY` | `3.0` | Flux multiplier over baseline to wake; lower = more sensitive |
+| `sleep_flux_threshold` | `AURICLE_SLEEP_FLUX_THRESHOLD` | `0.02` | Normalized flux EMA cutoff for "quiet" classification |
 
 Example `config.yaml` block:
 ```yaml
@@ -101,6 +104,8 @@ These are matched against the full vosk transcript (exact, case-insensitive):
 **Egress:** Hermes streams the agent response sentence by sentence. Each sentence is synthesized with `edge-tts --stream` and piped directly to `pw-play`. The next sentence queues behind the current one. Barge-in (wakeword during TTS) kills playback immediately and opens a new listen window.
 
 **Active-listen window:** After TTS ends, the mic stays open for 5 seconds (configurable) without requiring the wakeword. This allows natural follow-up questions. A bong plays on expiry.
+
+**Auto-sleep:** After 60 seconds (configurable) of acoustic inactivity in IDLE mode, the wakeword model is gated off to save compute. The OWW model stays loaded; sleep is a software flag, not a model reload. Wake detection uses normalized spectral flux — the spectrum is compared frame-to-frame, so stable background noise (fans, HVAC) doesn't prevent sleep while any novel acoustic event (speech, door, clap) instantly re-enables the wakeword. Wake-up is silent and invisible to the user.
 
 **Fault recovery:** If the Jabra is unplugged at boot or a model fails to load, the adapter enters a fatal state visible in `hermes gateway status` but does not crash the hermes process. It retries automatically every 30 seconds.
 

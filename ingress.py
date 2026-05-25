@@ -23,6 +23,7 @@ from .consts import (
     _CMD_STOP,
 )
 from .fsm import FSM, State
+from .sleep import SleepDetector, SleepSignal
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ def run_ingress_loop(
     stop_event: threading.Event,
     active_listen_duration: float,
     oww_threshold: float,
+    sleep_detector: SleepDetector,
 ) -> None:
     """
     Synchronous ingress thread.
@@ -60,6 +62,7 @@ def run_ingress_loop(
     """
     active_listen_deadline: float | None = None
     consecutive_misinputs: int = 0
+    was_idle: bool = False
     stdout = arecord_proc.stdout
 
     while not stop_event.is_set():
@@ -71,10 +74,24 @@ def run_ingress_loop(
         audio_buffer.append(data)
         state = fsm.get()
 
-        # ── IDLE: only wakeword detection ─────────────────────────────────
+        # ── IDLE: wakeword detection + auto-sleep ──────────────────────────
         if state == State.IDLE:
+            if not was_idle:
+                sleep_detector.reset()
+            was_idle = True
+
             if fsm.muted:
                 continue
+
+            sig = sleep_detector.feed(data)
+            if sig is SleepSignal.SLEEP and not fsm.sleeping:
+                fsm.sleeping = True
+            elif sig is SleepSignal.WAKE and fsm.sleeping:
+                fsm.sleeping = False
+
+            if fsm.sleeping:
+                continue
+
             audio = np.frombuffer(data, dtype=np.int16)
             prob  = oww.predict(audio).get(wakeword_key, 0.0)
             if prob >= oww_threshold:
@@ -87,6 +104,7 @@ def run_ingress_loop(
 
         # ── SPEAKING: run OWW in parallel for barge-in ────────────────────
         elif state == State.SPEAKING:
+            was_idle = False
             audio = np.frombuffer(data, dtype=np.int16)
             prob  = oww.predict(audio).get(wakeword_key, 0.0)
             if prob >= oww_threshold:
@@ -101,6 +119,7 @@ def run_ingress_loop(
 
         # ── AWAITING_UTTERANCE / UTTERANCE: STT ───────────────────────────
         elif state in (State.AWAITING_UTTERANCE, State.UTTERANCE):
+            was_idle = False
             # Arm deadline on first chunk after entering AWAITING_UTTERANCE
             if state == State.AWAITING_UTTERANCE and active_listen_deadline is None:
                 active_listen_deadline = time.monotonic() + active_listen_duration
@@ -148,7 +167,7 @@ def run_ingress_loop(
 
         # ── DISPATCHED: agent is running, nothing to do here ──────────────
         elif state in (State.DISPATCHED, State.BOOTING, State.FATAL):
-            pass
+            was_idle = False
 
 
 def _handle_transcript(

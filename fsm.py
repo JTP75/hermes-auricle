@@ -16,9 +16,10 @@ class FSM:
     """Thread-safe finite state machine for the auricle adapter."""
 
     def __init__(self) -> None:
-        self._state = State.BOOTING
-        self._lock  = threading.Lock()
-        self.muted  = False  # orthogonal flag; not a state
+        self._state  = State.BOOTING
+        self._lock   = threading.Lock()
+        self.muted   = False  # orthogonal flag; not a state
+        self.sleeping = False  # orthogonal flag; not a state
 
     def get(self) -> State:
         with self._lock:

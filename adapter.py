@@ -18,6 +18,7 @@ from gateway.platforms.base import (
 
 from .consts import (
     ALL_ASSETS,
+    AUDIO_CHUNK_BYTES,
     AUDIO_RING_BUFFER_CHUNKS,
     TTS_ECHO_TAIL_SECONDS,
     ASSET_NOTIFY,
@@ -31,6 +32,9 @@ from .consts import (
     DEFAULT_OWW_MELSPEC_MODEL_PATH,
     DEFAULT_OWW_WAKEWORD_MODEL_PATH,
     DEFAULT_SESSION_RESUME,
+    DEFAULT_SLEEP_FLUX_THRESHOLD,
+    DEFAULT_SLEEP_TIMEOUT,
+    DEFAULT_SLEEP_WAKE_SENSITIVITY,
     DEFAULT_TTS_VOICE,
     DEFAULT_VOSK_MODEL_PATH,
     EDGE_TTS_BIN,
@@ -44,6 +48,9 @@ from .consts import (
     ENV_OWW_MELSPEC_MODEL_PATH,
     ENV_OWW_WAKEWORD_MODEL_PATH,
     ENV_SESSION_RESUME,
+    ENV_SLEEP_FLUX_THRESHOLD,
+    ENV_SLEEP_TIMEOUT,
+    ENV_SLEEP_WAKE_SENSITIVITY,
     ENV_TTS_VOICE,
     ENV_VOSK_MODEL_PATH,
     OWW_THRESHOLD,
@@ -53,6 +60,7 @@ from .consts import (
     PW_PLAY_TARGET,
     RETRY_DELAY_SECONDS,
     SAMPLE_RATE,
+    SLEEP_EMA_ALPHA,
     STREAM_MESSAGE_ID,
     _CMD_CLEAR,
     _CMD_STOP,
@@ -63,6 +71,7 @@ from .egress import EgressController
 from .fsm import FSM, State
 from .ingress import run_ingress_loop
 from .providers import EdgeTTSProvider, VoskSTTProvider
+from .sleep import SleepDetector
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +107,15 @@ class AuricleAdapter(BasePlatformAdapter):
         self._session_resume = _parse_bool(os.getenv(ENV_SESSION_RESUME, str(DEFAULT_SESSION_RESUME)))
         self._active_listen_duration = float(
             os.getenv(ENV_ACTIVE_LISTEN_DURATION, str(DEFAULT_ACTIVE_LISTEN_DURATION))
+        )
+        self._sleep_timeout = float(
+            os.getenv(ENV_SLEEP_TIMEOUT, str(DEFAULT_SLEEP_TIMEOUT))
+        )
+        self._sleep_wake_sensitivity = float(
+            os.getenv(ENV_SLEEP_WAKE_SENSITIVITY, str(DEFAULT_SLEEP_WAKE_SENSITIVITY))
+        )
+        self._sleep_flux_threshold = float(
+            os.getenv(ENV_SLEEP_FLUX_THRESHOLD, str(DEFAULT_SLEEP_FLUX_THRESHOLD))
         )
 
         self._arecord_proc:   Optional[subprocess.Popen]  = None
@@ -213,6 +231,14 @@ class AuricleAdapter(BasePlatformAdapter):
         )
 
         # Start ingress thread
+        sleep_detector = SleepDetector(
+            timeout_seconds=self._sleep_timeout,
+            sample_rate=SAMPLE_RATE,
+            chunk_bytes=AUDIO_CHUNK_BYTES,
+            flux_threshold=self._sleep_flux_threshold,
+            wake_multiplier=self._sleep_wake_sensitivity,
+            ema_alpha=SLEEP_EMA_ALPHA,
+        )
         self._stop_event.clear()
         self._ingress_thread = threading.Thread(
             target=run_ingress_loop,
@@ -231,6 +257,7 @@ class AuricleAdapter(BasePlatformAdapter):
                 stop_event=self._stop_event,
                 active_listen_duration=self._active_listen_duration,
                 oww_threshold=OWW_THRESHOLD,
+                sleep_detector=sleep_detector,
             ),
         )
         self._ingress_thread.start()
@@ -458,6 +485,9 @@ def _apply_yaml_config_fn(yaml_cfg, platform_cfg):
         ("oww_wakeword_model_path",  ENV_OWW_WAKEWORD_MODEL_PATH,  DEFAULT_OWW_WAKEWORD_MODEL_PATH),
         ("oww_melspec_model_path",   ENV_OWW_MELSPEC_MODEL_PATH,   DEFAULT_OWW_MELSPEC_MODEL_PATH),
         ("oww_embedding_model_path", ENV_OWW_EMBEDDING_MODEL_PATH, DEFAULT_OWW_EMBEDDING_MODEL_PATH),
+        ("sleep_timeout",            ENV_SLEEP_TIMEOUT,            str(DEFAULT_SLEEP_TIMEOUT)),
+        ("sleep_wake_sensitivity",   ENV_SLEEP_WAKE_SENSITIVITY,   str(DEFAULT_SLEEP_WAKE_SENSITIVITY)),
+        ("sleep_flux_threshold",     ENV_SLEEP_FLUX_THRESHOLD,     str(DEFAULT_SLEEP_FLUX_THRESHOLD)),
     ]
     for yaml_key, env_key, _ in mappings:
         if yaml_key in auricle_cfg and not os.getenv(env_key):
