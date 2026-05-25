@@ -58,6 +58,7 @@ from .consts import (
     _CMD_STOP,
 )
 from .audio_buffer import AudioBuffer
+from .classifier import SystemMessageClassifier
 from .egress import EgressController
 from .fsm import FSM, State
 from .ingress import run_ingress_loop
@@ -103,6 +104,7 @@ class AuricleAdapter(BasePlatformAdapter):
         self._ingress_thread: Optional[threading.Thread]  = None
         self._retry_task:     Optional[asyncio.Task]      = None
         self._pending_clear:  bool                        = False
+        self._classifier = SystemMessageClassifier()
         self._source = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
@@ -291,6 +293,11 @@ class AuricleAdapter(BasePlatformAdapter):
             await self._egress.play_file(ASSET_ERROR)
             return SendResult(success=False, error="adapter not connected")
 
+        verdict = self._classifier.classify(content)
+        if verdict.is_suppression:
+            logger.info("[auricle] suppressed (%s): %r", verdict.name, content[:80])
+            return SendResult(success=True, message_id=STREAM_MESSAGE_ID)
+
         proactive = self._fsm.is_idle_for_proactive()
 
         self._egress.reset()
@@ -345,17 +352,21 @@ class AuricleAdapter(BasePlatformAdapter):
 
         if self._pending_clear:
             self._pending_clear = False
+            self._classifier.expect_command_response()
             await self.handle_message(self._make_event("/new", internal=True))
 
         if text == _CMD_CLEAR:
             await self._egress.play_file(ASSET_CLEARED)
+            self._classifier.expect_command_response()
             await self.handle_message(self._make_event("/new", internal=True))
             return
 
         if text == _CMD_STOP:
+            self._classifier.expect_command_response()
             await self.handle_message(self._make_event("/stop", internal=True))
             return
 
+        self._classifier.reset_pending()
         await self.handle_message(self._make_event(text, internal=False))
 
     def _make_event(self, text: str, *, internal: bool) -> MessageEvent:
