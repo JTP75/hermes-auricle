@@ -20,9 +20,9 @@ from .consts import (
     ALL_ASSETS,
     AUDIO_RING_BUFFER_CHUNKS,
     TTS_ECHO_TAIL_SECONDS,
-    ASSET_CLEARED,
-    ASSET_DING,
-    ASSET_ERROR,
+    ASSET_NOTIFY,
+    TTS_CLEARED,
+    TTS_ERROR,
     CHAT_ID,
     DEFAULT_ACTIVE_LISTEN_DURATION,
     DEFAULT_MIC_DEVICE,
@@ -141,7 +141,7 @@ class AuricleAdapter(BasePlatformAdapter):
         # Audio assets
         missing = [str(a) for a in ALL_ASSETS if not a.exists()]
         if missing:
-            msg = f"Missing audio assets (run scripts/generate_assets.py): {', '.join(missing)}"
+            msg = f"Missing audio assets: {', '.join(missing)}"
             logger.error("[auricle] %s", msg)
             self._set_fatal_error("missing_assets", msg, retryable=False)
             return False
@@ -290,7 +290,7 @@ class AuricleAdapter(BasePlatformAdapter):
     ) -> SendResult:
         logger.info("[auricle] send(): %r", content[:80])
         if self._fsm.get() in (State.FATAL, State.BOOTING):
-            await self._egress.play_file(ASSET_ERROR)
+            await self._egress.speak(TTS_ERROR)
             return SendResult(success=False, error="adapter not connected")
 
         verdict = self._classifier.classify(content)
@@ -304,8 +304,8 @@ class AuricleAdapter(BasePlatformAdapter):
         self._egress.start_worker()
 
         if proactive:
-            logger.info("[auricle] proactive message → ding")
-            await self._egress.play_file(ASSET_DING)
+            logger.info("[auricle] proactive message → notify")
+            await self._egress.play_file(ASSET_NOTIFY)
             await asyncio.sleep(PROACTIVE_PRE_SPEECH_PAUSE)
 
         self._fsm.transition(State.SPEAKING)
@@ -369,7 +369,7 @@ class AuricleAdapter(BasePlatformAdapter):
             await self.handle_message(self._make_event("/new", internal=True))
 
         if text == _CMD_CLEAR:
-            await self._egress.play_file(ASSET_CLEARED)
+            await self._egress.speak(TTS_CLEARED)
             self._classifier.expect_command_response()
             await self.handle_message(self._make_event("/new", internal=True))
             return
@@ -484,7 +484,7 @@ async def _standalone_send(
         return {"success": True}
     try:
         ding = await asyncio.create_subprocess_exec(
-            PW_PLAY_BIN, f"--target={PW_PLAY_TARGET}", str(ASSET_DING),
+            PW_PLAY_BIN, f"--target={PW_PLAY_TARGET}", str(ASSET_NOTIFY),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         await ding.wait()

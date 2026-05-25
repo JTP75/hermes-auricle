@@ -146,7 +146,7 @@ class EgressController:
         return proc
 
     async def play_file(self, path: Path) -> None:
-        """Play a WAV asset file directly (for ding/ping/bong/etc.)."""
+        """Play a WAV asset file directly (for notify/wakeup/tosleep/etc.)."""
         proc = await asyncio.create_subprocess_exec(
             PW_PLAY_BIN,
             f"--target={PW_PLAY_TARGET}",
@@ -155,6 +155,13 @@ class EgressController:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
+
+    async def speak(self, text: str) -> None:
+        """Synthesize and play a short phrase immediately, outside the worker queue."""
+        audio = await self._fetch_audio(text)
+        if audio:
+            proc = await self._play_audio_bytes(audio)
+            await proc.wait()
 
     async def _worker(self) -> None:
         # lookahead: a sentence already dequeued (and its audio prefetched) but not yet played.

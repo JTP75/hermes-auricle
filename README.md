@@ -35,12 +35,7 @@ sudo apt install alsa-utils pipewire
 
 1. Clone or copy this directory to `~/.hermes/plugins/hermes-auricle/`
 
-2. Generate audio assets (one-time):
-   ```bash
-   python scripts/generate_assets.py
-   # or with a different voice:
-   python scripts/generate_assets.py --voice en-US-AriaNeural
-   ```
+2. Place sound effect WAVs in `assets/` (see Assets section below).
 
 3. Place models in `models/` (see above).
 
@@ -123,8 +118,6 @@ hermes-auricle/
   providers.py         STTProvider / TTSProvider ABCs + implementations
   ingress.py           arecord + OWW + vosk thread loop
   egress.py            streaming TTS playback queue
-  assets/              ping / bong / ding / cleared / error WAVs
+  assets/              auricle-wakeup / auricle-tosleep / auricle-notify WAVs
   models/              model files (not committed)
-  scripts/
-    generate_assets.py one-time audio asset generation
 ```

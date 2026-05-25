@@ -10,8 +10,8 @@ import numpy as np
 from .audio_buffer import AudioBuffer
 from .consts import (
     AUDIO_CHUNK_BYTES,
-    ASSET_BONG,
-    ASSET_PING,
+    ASSET_TOSLEEP,
+    ASSET_WAKEUP,
     CLEAR_COMMANDS,
     STOP_COMMANDS,
     PW_PLAY_BIN,
@@ -77,7 +77,7 @@ def run_ingress_loop(
                 logger.info("[auricle] wakeword detected (p=%.2f) → AWAITING_UTTERANCE", prob)
                 oww.reset()
                 stt_provider.reset()
-                _play_asset_sync(ASSET_PING)
+                _play_asset_sync(ASSET_WAKEUP)
                 fsm.transition(State.AWAITING_UTTERANCE)
                 active_listen_deadline = None  # armed on first chunk in new state
 
@@ -91,7 +91,7 @@ def run_ingress_loop(
                 stt_provider.reset()
                 loop.call_soon_threadsafe(egress.abort)
                 # Play ping async so ingress starts listening immediately
-                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(egress.play_file(ASSET_PING)))
+                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(egress.play_file(ASSET_WAKEUP)))
                 fsm.transition(State.AWAITING_UTTERANCE)
                 active_listen_deadline = None
 
@@ -107,7 +107,7 @@ def run_ingress_loop(
                 logger.info("[auricle] active-listen expired → IDLE")
                 oww.reset()
                 stt_provider.reset()
-                _play_asset_sync(ASSET_BONG)
+                _play_asset_sync(ASSET_TOSLEEP)
                 fsm.transition(State.IDLE)
                 active_listen_deadline = None
                 continue

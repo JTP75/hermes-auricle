@@ -6,12 +6,13 @@ _PLUGIN_DIR = Path(__file__).parent
 ASSETS_DIR  = _PLUGIN_DIR / "assets"
 _MODELS_DIR = _PLUGIN_DIR / "models"
 
-ASSET_PING    = ASSETS_DIR / "ping.wav"
-ASSET_BONG    = ASSETS_DIR / "bong.wav"
-ASSET_DING    = ASSETS_DIR / "ding.wav"
-ASSET_CLEARED = ASSETS_DIR / "cleared.wav"
-ASSET_ERROR   = ASSETS_DIR / "error.wav"
-ALL_ASSETS: Tuple[Path, ...] = (ASSET_PING, ASSET_BONG, ASSET_DING, ASSET_CLEARED, ASSET_ERROR)
+ASSET_WAKEUP  = ASSETS_DIR / "auricle-wakeup.wav"
+ASSET_TOSLEEP = ASSETS_DIR / "auricle-tosleep.wav"
+ASSET_NOTIFY  = ASSETS_DIR / "auricle-notify.wav"
+ALL_ASSETS: Tuple[Path, ...] = (ASSET_WAKEUP, ASSET_TOSLEEP, ASSET_NOTIFY)
+
+TTS_CLEARED = "Session cleared."
+TTS_ERROR   = "Something went wrong."
 
 # ── Env var names ──────────────────────────────────────────────────────────
 ENV_MIC_DEVICE               = "AURICLE_MIC_DEVICE"
@@ -52,7 +53,7 @@ STREAM_MESSAGE_ID = "auricle_voice_stream"
 
 # ── Timing ─────────────────────────────────────────────────────────────────
 RETRY_DELAY_SECONDS        = 30
-PROACTIVE_PRE_SPEECH_PAUSE = 1.0   # seconds of silence after ding before TTS
+PROACTIVE_PRE_SPEECH_PAUSE = 1.0   # seconds of silence after notify before TTS
 
 # ── Binaries / audio routing ───────────────────────────────────────────────
 EDGE_TTS_BIN   = "edge-tts"
