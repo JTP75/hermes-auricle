@@ -76,7 +76,7 @@ class AuricleAdapter(BasePlatformAdapter):
     Egress:  sentence-by-sentence edge-tts piped to pw-play.
     """
 
-    REQUIRES_EDIT_FINALIZE = True
+    REQUIRES_EDIT_FINALIZE = False
 
     def __init__(self, config) -> None:
         super().__init__(config, Platform("auricle"))
@@ -302,7 +302,9 @@ class AuricleAdapter(BasePlatformAdapter):
             await asyncio.sleep(PROACTIVE_PRE_SPEECH_PAUSE)
 
         self._fsm.transition(State.SPEAKING)
-        await self._egress.process_delta(content, finalize=False)
+        await self._egress.process_delta(content, finalize=True)
+        self._fsm.transition_if(State.SPEAKING, State.AWAITING_UTTERANCE)
+        logger.info("[auricle] TTS complete → active-listen window open")
         return SendResult(success=True, message_id=STREAM_MESSAGE_ID)
 
     async def edit_message(
@@ -313,15 +315,7 @@ class AuricleAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        logger.info("[auricle] edit_message(finalize=%s): %r", finalize, content[:80])
-        if self._barge_in.is_set():
-            # Drop trailing chunk edit arrivals if the current session was barged in
-            return SendResult(success=True, message_id=message_id)
-
-        await self._egress.process_delta(content, finalize=finalize)
-        if finalize:
-            self._fsm.transition_if(State.SPEAKING, State.AWAITING_UTTERANCE)
-            logger.info("[auricle] TTS complete → active-listen window open")
+        logger.info("[auricle] edit_message(finalize=%s) ignored: send() already finalized", finalize)
         return SendResult(success=True, message_id=message_id)
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
