@@ -13,6 +13,7 @@ ASSET_CONFUSED = ASSETS_DIR / "auricle-confused.wav"
 ALL_ASSETS: Tuple[Path, ...] = (ASSET_WAKEUP, ASSET_TOSLEEP, ASSET_NOTIFY, ASSET_CONFUSED)
 
 TTS_CLEARED = "Session cleared."
+TTS_STOPPED = "Run stopped."
 TTS_ERROR   = "Something went wrong."
 
 # ── Misinput guard ─────────────────────────────────────────────────────────
