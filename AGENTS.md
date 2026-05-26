@@ -110,3 +110,9 @@ When asked to commit, propose the message and wait for confirmation before runni
 Subject line must be 100 characters or fewer.
 Use the conventional format: `type: short description` (e.g. `fix: guard against empty transcript`).
 No period at the end. No body unless the user asks for one.
+
+### Rule 4 — Update docs when you update code
+
+New features additions must be documented with at least one line in `README.md`.
+Patches and bug fixes should only be documented if they contradict what is in `README.md`.
+The amount of documentation for an addition should reflect the scale code change.
