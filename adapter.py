@@ -23,6 +23,7 @@ from .consts import (
     TTS_ECHO_TAIL_SECONDS,
     ASSET_NOTIFY,
     TTS_CLEARED,
+    TTS_STOPPED,
     TTS_ERROR,
     CHAT_ID,
     DEFAULT_ACTIVE_LISTEN_DURATION,
@@ -402,6 +403,7 @@ class AuricleAdapter(BasePlatformAdapter):
             return
 
         if text == _CMD_STOP:
+            await self._egress.speak(TTS_STOPPED, priority=True)
             self._classifier.expect_command_response()
             await self.handle_message(self._make_event("/stop", internal=True))
             return
