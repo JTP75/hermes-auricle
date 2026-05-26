@@ -57,3 +57,11 @@ optional_env:
     description: "Normalized flux EMA cutoff for 'quiet' classification (default: 0.02)"
     prompt: "Sleep flux threshold"
     password: false
+  - name: AURICLE_SESSION_AUTO_CLEAR
+    description: "Clear session history after a period of inactivity (default: true)"
+    prompt: "Auto-clear session on inactivity? (true/false)"
+    password: false
+  - name: AURICLE_SESSION_CLEAR_AFTER
+    description: "Seconds of inactivity before session history is cleared (default: 3600)"
+    prompt: "Session clear-after duration (seconds)"
+    password: false

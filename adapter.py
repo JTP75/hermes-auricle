@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +33,8 @@ from .consts import (
     DEFAULT_OWW_EMBEDDING_MODEL_PATH,
     DEFAULT_OWW_MELSPEC_MODEL_PATH,
     DEFAULT_OWW_WAKEWORD_MODEL_PATH,
+    DEFAULT_SESSION_AUTO_CLEAR,
+    DEFAULT_SESSION_CLEAR_AFTER,
     DEFAULT_SESSION_RESUME,
     DEFAULT_SLEEP_FLUX_THRESHOLD,
     DEFAULT_SLEEP_TIMEOUT,
@@ -48,6 +51,8 @@ from .consts import (
     ENV_OWW_EMBEDDING_MODEL_PATH,
     ENV_OWW_MELSPEC_MODEL_PATH,
     ENV_OWW_WAKEWORD_MODEL_PATH,
+    ENV_SESSION_AUTO_CLEAR,
+    ENV_SESSION_CLEAR_AFTER,
     ENV_SESSION_RESUME,
     ENV_SLEEP_FLUX_THRESHOLD,
     ENV_SLEEP_TIMEOUT,
@@ -118,6 +123,14 @@ class AuricleAdapter(BasePlatformAdapter):
         self._sleep_flux_threshold = float(
             os.getenv(ENV_SLEEP_FLUX_THRESHOLD, str(DEFAULT_SLEEP_FLUX_THRESHOLD))
         )
+
+        self._session_auto_clear = _parse_bool(
+            os.getenv(ENV_SESSION_AUTO_CLEAR, str(DEFAULT_SESSION_AUTO_CLEAR))
+        )
+        self._session_clear_after = float(
+            os.getenv(ENV_SESSION_CLEAR_AFTER, str(DEFAULT_SESSION_CLEAR_AFTER))
+        )
+        self._last_dispatch_time: Optional[float] = None
 
         self._arecord_proc:   Optional[subprocess.Popen]  = None
         self._ingress_thread: Optional[threading.Thread]  = None
@@ -391,6 +404,16 @@ class AuricleAdapter(BasePlatformAdapter):
         if not self._message_handler:
             return
 
+        now = time.monotonic()
+        if (
+            self._session_auto_clear
+            and self._last_dispatch_time is not None
+            and now - self._last_dispatch_time >= self._session_clear_after
+        ):
+            logger.info("[auricle] idle timeout exceeded — clearing session history")
+            self._pending_clear = True
+        self._last_dispatch_time = now
+
         if self._pending_clear:
             self._pending_clear = False
             self._classifier.expect_command_response()
@@ -490,6 +513,8 @@ def _apply_yaml_config_fn(yaml_cfg, platform_cfg):
         ("sleep_timeout",            ENV_SLEEP_TIMEOUT,            str(DEFAULT_SLEEP_TIMEOUT)),
         ("sleep_wake_sensitivity",   ENV_SLEEP_WAKE_SENSITIVITY,   str(DEFAULT_SLEEP_WAKE_SENSITIVITY)),
         ("sleep_flux_threshold",     ENV_SLEEP_FLUX_THRESHOLD,     str(DEFAULT_SLEEP_FLUX_THRESHOLD)),
+        ("session_auto_clear",       ENV_SESSION_AUTO_CLEAR,       str(DEFAULT_SESSION_AUTO_CLEAR)),
+        ("session_clear_after",      ENV_SESSION_CLEAR_AFTER,      str(DEFAULT_SESSION_CLEAR_AFTER)),
     ]
     for yaml_key, env_key, _ in mappings:
         if yaml_key in auricle_cfg and not os.getenv(env_key):

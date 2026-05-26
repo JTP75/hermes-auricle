@@ -35,18 +35,16 @@ sudo apt install alsa-utils pipewire
 
 1. Clone or copy this directory to `~/.hermes/plugins/hermes-auricle/`
 
-2. Place sound effect WAVs in `assets/` (see Assets section below).
+2. Place models in `models/` (see above).
 
-3. Place models in `models/` (see above).
-
-4. Enable the plugin in `~/.hermes/config.yaml`:
+3. Enable the plugin in `~/.hermes/config.yaml`:
    ```yaml
    plugins:
      enabled:
        - hermes-auricle
    ```
 
-5. Start the hermes gateway:
+4. Start the hermes gateway:
    ```bash
    hermes gateway start
    ```
@@ -71,6 +69,8 @@ All settings live under `gateway.auricle` in `~/.hermes/config.yaml`. Env vars t
 | `sleep_timeout` | `AURICLE_SLEEP_TIMEOUT` | `60` | Seconds of IDLE silence before auto-sleep |
 | `sleep_wake_sensitivity` | `AURICLE_SLEEP_WAKE_SENSITIVITY` | `3.0` | Flux multiplier over baseline to wake; lower = more sensitive |
 | `sleep_flux_threshold` | `AURICLE_SLEEP_FLUX_THRESHOLD` | `0.02` | Normalized flux EMA cutoff for "quiet" classification |
+| `session_auto_clear` | `AURICLE_SESSION_AUTO_CLEAR` | `true` | Clear session history after a period of inactivity |
+| `session_clear_after` | `AURICLE_SESSION_CLEAR_AFTER` | `3600` | Seconds of inactivity before session history is cleared |
 
 Example `config.yaml` block:
 ```yaml
@@ -88,12 +88,12 @@ gateway:
 
 ## Voice commands
 
-These are matched against the full vosk transcript (exact, case-insensitive):
+These are matched against the full vosk transcript (exact, case-insensitive). **All voice commands require the wakeword to be said first to activate**:
 
 | Say | Effect |
 |-----|--------|
-| "clear", "reset", "it's clear", "its clear" | Clear session history, play confirmation |
-| "stop" (after wakeword) | Cancel in-flight agent run, stop TTS, return to wakeword mode |
+| "clear", "reset" | Clear session history, play confirmation |
+| "stop" | Cancel in-flight agent run, stop TTS, return to wakeword mode |
 
 ---
 
@@ -104,6 +104,8 @@ These are matched against the full vosk transcript (exact, case-insensitive):
 **Egress:** The full agent response arrives in one `send()` call and is segmented internally by newlines into units. Each unit is synthesized via the `edge_tts` Python library and written to a `pw-play` stdin pipe. While the current unit plays, the next one is pre-fetched concurrently (lookahead). Barge-in (wakeword during TTS) kills playback immediately and opens a new listen window.
 
 **Active-listen window:** After TTS ends, the mic stays open for 5 seconds (configurable) without requiring the wakeword. This allows natural follow-up questions. The tosleep chime plays on expiry.
+
+**Auto-clear:** When a new utterance is dispatched after a period of inactivity (default 1 hour), the session history is silently cleared before the message is sent. The threshold is measured from the last dispatched message — only real utterances and voice commands count, not passive listening. Disable with `session_auto_clear: false`.
 
 **Auto-sleep:** After 60 seconds (configurable) of acoustic inactivity in IDLE mode, the wakeword model is gated off to save compute. The OWW model stays loaded; sleep is a software flag, not a model reload. Wake detection uses normalized spectral flux — the spectrum is compared frame-to-frame, so stable background noise (fans, HVAC) doesn't prevent sleep while any novel acoustic event (speech, door, clap) instantly re-enables the wakeword. Wake-up is silent and invisible to the user.
 
