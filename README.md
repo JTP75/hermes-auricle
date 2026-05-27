@@ -15,8 +15,13 @@ A local voice platform plugin for [hermes](https://github.com/nousresearch/herme
 # vosk backend (default, CPU-only)
 pip install vosk openwakeword numpy edge-tts
 
-# whisper backend (requires CUDA GPU)
-pip install transformers torch accelerate webrtcvad openwakeword numpy edge-tts
+# whisper backend (requires CUDA GPU + a separate Python 3.10 venv)
+# 1. Create a Python 3.10 venv and install inference deps inside it
+python3.10 -m venv /path/to/whisper-venv
+/path/to/whisper-venv/bin/pip install torch transformers accelerate webrtcvad
+# 2. Install the audio pipeline deps in the hermes venv as usual
+pip install openwakeword numpy edge-tts
+# 3. Point AURICLE_WHISPER_PYTHON at the 3.10 venv python
 ```
 
 **System packages** (Debian/Ubuntu)
@@ -69,6 +74,7 @@ All settings live under a top-level `auricle:` key in `~/.hermes/config.yaml`. E
 | `stt_backend` | `AURICLE_STT_BACKEND` | `vosk` | STT backend: `vosk` or `whisper` |
 | `vosk_model_path` | `AURICLE_VOSK_MODEL_PATH` | `models/vosk-model` | Path to vosk model directory (vosk backend only) |
 | `whisper_model_id` | `AURICLE_WHISPER_MODEL_ID` | `distil-whisper/distil-large-v3` | HuggingFace model ID (whisper backend only) |
+| `whisper_python` | `AURICLE_WHISPER_PYTHON` | *(required)* | Path to a Python 3.10 binary with torch/transformers/webrtcvad installed (whisper backend only) |
 | `oww_wakeword_model_path` | `AURICLE_OWW_WAKEWORD_MODEL_PATH` | `models/wakeword.onnx` | Path to OWW wakeword `.onnx` model |
 | `oww_melspec_model_path` | `AURICLE_OWW_MELSPEC_MODEL_PATH` | `models/melspectrogram.onnx` | Path to OWW melspec preprocessor |
 | `oww_embedding_model_path` | `AURICLE_OWW_EMBEDDING_MODEL_PATH` | `models/embedding_model.onnx` | Path to OWW embedding preprocessor |
@@ -104,7 +110,7 @@ These are matched against the full vosk transcript (exact, case-insensitive). **
 
 ## How it works
 
-**Ingress:** A single `arecord` subprocess feeds raw 16kHz PCM through a state-gated pipeline. In IDLE, OWW watches for the wakeword. In SPEAKING and DISPATCHED, OWW also runs for barge-in detection. In AWAITING_UTTERANCE and UTTERANCE, vosk captures the utterance. OWW and vosk never run on the same chunk simultaneously — which state the FSM is in determines which model processes each chunk. After the utterance ends (vosk final result), the transcript is dispatched to the hermes agent.
+**Ingress:** A single `arecord` subprocess feeds raw 16kHz PCM through a state-gated pipeline. In IDLE, OWW watches for the wakeword. In SPEAKING and DISPATCHED, OWW also runs for barge-in detection. In AWAITING_UTTERANCE and UTTERANCE, the STT backend captures the utterance. OWW and STT never run on the same chunk simultaneously — which state the FSM is in determines which model processes each chunk. After the utterance ends, the transcript is dispatched to the hermes agent. When using the whisper backend, STT inference runs in a separate Python 3.10 subprocess (`whisper_worker.py`) so that GPU-only torch wheels for platforms like the Jetson Orin Nano are not constrained by the hermes venv's Python version.
 
 **Egress:** The full agent response arrives in one `send()` call and is segmented internally by newlines into units. Each unit is synthesized via the `edge_tts` Python library and written to a `pw-play` stdin pipe. While the current unit plays, the next one is pre-fetched concurrently (lookahead). Barge-in (wakeword during TTS) kills playback immediately and opens a new listen window.
 

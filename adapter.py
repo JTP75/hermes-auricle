@@ -63,6 +63,7 @@ from .consts import (
     ENV_TTS_VOICE,
     ENV_VOSK_MODEL_PATH,
     ENV_WHISPER_MODEL_ID,
+    ENV_WHISPER_PYTHON,
     OWW_THRESHOLD,
     PLATFORM_HINT,
     PROACTIVE_PRE_SPEECH_PAUSE,
@@ -110,7 +111,9 @@ class AuricleAdapter(BasePlatformAdapter):
         _backend = os.getenv(ENV_STT_BACKEND, DEFAULT_STT_BACKEND).lower()
         if _backend == "whisper":
             self._stt = WhisperSTTProvider(
-                os.getenv(ENV_WHISPER_MODEL_ID, DEFAULT_WHISPER_MODEL_ID)
+                model_id=os.getenv(ENV_WHISPER_MODEL_ID, DEFAULT_WHISPER_MODEL_ID),
+                python_path=os.getenv(ENV_WHISPER_PYTHON, ""),
+                worker_path=os.path.join(os.path.dirname(__file__), "whisper_worker.py"),
             )
         else:
             self._stt = VoskSTTProvider(
@@ -308,6 +311,9 @@ class AuricleAdapter(BasePlatformAdapter):
 
         self._stop_event.set()
 
+        if isinstance(self._stt, WhisperSTTProvider):
+            self._stt.terminate()
+
         if self._arecord_proc:
             try:
                 self._arecord_proc.kill()
@@ -475,11 +481,8 @@ def check_requirements() -> bool:
         return False
     backend = os.getenv(ENV_STT_BACKEND, DEFAULT_STT_BACKEND).lower()
     if backend == "whisper":
-        try:
-            import webrtcvad    # noqa: F401
-            import transformers # noqa: F401
-            import torch        # noqa: F401
-        except ImportError:
+        python_path = os.getenv(ENV_WHISPER_PYTHON)
+        if not python_path or not shutil.which(python_path):
             return False
     else:
         try:
@@ -542,6 +545,7 @@ def _apply_yaml_config_fn(yaml_cfg, platform_cfg):
         ("stt_backend",              ENV_STT_BACKEND,              DEFAULT_STT_BACKEND),
         ("vosk_model_path",          ENV_VOSK_MODEL_PATH,          DEFAULT_VOSK_MODEL_PATH),
         ("whisper_model_id",         ENV_WHISPER_MODEL_ID,         DEFAULT_WHISPER_MODEL_ID),
+        ("whisper_python",           ENV_WHISPER_PYTHON,           ""),
         ("oww_wakeword_model_path",  ENV_OWW_WAKEWORD_MODEL_PATH,  DEFAULT_OWW_WAKEWORD_MODEL_PATH),
         ("oww_melspec_model_path",   ENV_OWW_MELSPEC_MODEL_PATH,   DEFAULT_OWW_MELSPEC_MODEL_PATH),
         ("oww_embedding_model_path", ENV_OWW_EMBEDDING_MODEL_PATH, DEFAULT_OWW_EMBEDDING_MODEL_PATH),
@@ -617,7 +621,11 @@ def register(ctx) -> None:
         allow_update_command=False,
         install_hint=(
             "vosk backend (default): pip install vosk openwakeword numpy edge-tts\n"
-            "whisper backend: pip install transformers torch accelerate webrtcvad openwakeword numpy edge-tts\n"
+            "whisper backend:\n"
+            "  1. Create a Python 3.10 venv: python3.10 -m venv /path/to/whisper-venv\n"
+            "  2. Install deps:  /path/to/whisper-venv/bin/pip install torch transformers accelerate webrtcvad\n"
+            "  3. In hermes venv: pip install openwakeword numpy edge-tts\n"
+            "  4. Set AURICLE_WHISPER_PYTHON=/path/to/whisper-venv/bin/python\n"
             "System packages: alsa-utils (arecord, aplay), ffmpeg"
         ),
     )

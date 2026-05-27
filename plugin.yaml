@@ -41,6 +41,10 @@ optional_env:
     description: "HuggingFace model ID for whisper backend (default: distil-whisper/distil-large-v3)"
     prompt: "Whisper model ID"
     password: false
+  - name: AURICLE_WHISPER_PYTHON
+    description: "Path to a Python 3.10 binary with torch/transformers/webrtcvad installed (required for whisper backend)"
+    prompt: "Whisper Python path (e.g. /path/to/whisper-venv/bin/python)"
+    password: false
   - name: AURICLE_OWW_WAKEWORD_MODEL_PATH
     description: "Path to the openWakeWord .tflite wakeword model file"
     prompt: "OWW wakeword model path (.onnx)"
