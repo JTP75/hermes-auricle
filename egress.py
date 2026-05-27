@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from .audio_buffer import AudioBuffer
-from .consts import PW_PLAY_BIN, PW_PLAY_TARGET
+from .consts import APLAY_BIN, APLAY_DEVICE, FFMPEG_BIN
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ class EgressController:
                 self._worker_task.cancel()
 
     def kill_active(self) -> None:
-        """Kill the active pw-play process. Safe to call from any thread."""
+        """Kill the active ffmpeg+aplay processes. Safe to call from any thread."""
         proc = self._active_proc
         if proc is not None:
             try:
@@ -118,15 +118,33 @@ class EgressController:
                     pass
 
     async def _spawn_pw_play(self) -> asyncio.subprocess.Process:
-        return await asyncio.create_subprocess_exec(
-            PW_PLAY_BIN,
-            f"--target={PW_PLAY_TARGET}",
-            "-",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            preexec_fn=os.setsid,
-        )
+        # asyncio StreamReader has no fileno() so we can't pass ffmpeg.stdout
+        # directly to aplay. Use os.pipe() for a real fd-based connection.
+        r_fd, w_fd = os.pipe()
+        try:
+            ffmpeg = await asyncio.create_subprocess_exec(
+                FFMPEG_BIN, "-hide_banner", "-loglevel", "quiet",
+                "-i", "pipe:0",
+                "-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=w_fd,
+                stderr=asyncio.subprocess.DEVNULL,
+                preexec_fn=os.setsid,
+            )
+        finally:
+            os.close(w_fd)  # parent doesn't need the write end
+        try:
+            await asyncio.create_subprocess_exec(
+                APLAY_BIN, "-D", APLAY_DEVICE,
+                "-r", "48000", "-c", "2", "-f", "S16_LE",
+                stdin=r_fd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        finally:
+            os.close(r_fd)  # parent doesn't need the read end
+        # return ffmpeg — killing it closes the write side, draining aplay cleanly
+        return ffmpeg
 
     async def _fetch_audio(self, sentence: str) -> bytes:
         """Collect all edge-tts audio bytes for a sentence into memory."""
@@ -148,9 +166,7 @@ class EgressController:
     async def play_file(self, path: Path) -> None:
         """Play a WAV asset file directly (for notify/wakeup/tosleep/etc.)."""
         proc = await asyncio.create_subprocess_exec(
-            PW_PLAY_BIN,
-            f"--target={PW_PLAY_TARGET}",
-            str(path),
+            APLAY_BIN, "-D", APLAY_DEVICE, str(path),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )

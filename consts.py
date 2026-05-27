@@ -97,6 +97,11 @@ PROACTIVE_PRE_SPEECH_PAUSE = 1.0   # seconds of silence after notify before TTS
 
 # ── Binaries / audio routing ───────────────────────────────────────────────
 EDGE_TTS_BIN   = "edge-tts"
+APLAY_BIN      = "aplay"
+FFMPEG_BIN     = "ffmpeg"
+APLAY_DEVICE   = "plughw:2,0"   # Jabra SPEAK 510 USB on Jetson Orin Nano
+
+# Legacy — kept for reference, no longer used
 PW_PLAY_BIN    = "pw-play"
 PW_PLAY_TARGET = "Jabra SPEAK 510 USB"
 

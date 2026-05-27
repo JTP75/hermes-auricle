@@ -10,6 +10,8 @@ import numpy as np
 from .audio_buffer import AudioBuffer
 from .consts import (
     AUDIO_CHUNK_BYTES,
+    APLAY_BIN,
+    APLAY_DEVICE,
     ASSET_CONFUSED,
     ASSET_TOSLEEP,
     ASSET_WAKEUP,
@@ -17,8 +19,6 @@ from .consts import (
     MISINPUT_MAX_CONSECUTIVE,
     MISINPUT_PHRASES,
     STOP_COMMANDS,
-    PW_PLAY_BIN,
-    PW_PLAY_TARGET,
     _CMD_CLEAR,
     _CMD_STOP,
 )
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 def _play_asset_sync(path) -> None:
     """Blocking WAV playback for short feedback assets."""
     subprocess.run(
-        [PW_PLAY_BIN, f"--target={PW_PLAY_TARGET}", str(path)],
+        [APLAY_BIN, "-D", APLAY_DEVICE, str(path)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
