@@ -29,9 +29,17 @@ optional_env:
     description: "Disable mic wakeword path on startup (default: false)"
     prompt: "Start muted? (true/false)"
     password: false
+  - name: AURICLE_STT_BACKEND
+    description: "STT backend to use: vosk (default, CPU-only) or whisper (GPU-accelerated)"
+    prompt: "STT backend (vosk or whisper)"
+    password: false
   - name: AURICLE_VOSK_MODEL_PATH
-    description: "Path to the vosk model directory"
+    description: "Path to the vosk model directory (vosk backend only)"
     prompt: "Vosk model path"
+    password: false
+  - name: AURICLE_WHISPER_MODEL_ID
+    description: "HuggingFace model ID for whisper backend (default: distil-whisper/distil-large-v3)"
+    prompt: "Whisper model ID"
     password: false
   - name: AURICLE_OWW_WAKEWORD_MODEL_PATH
     description: "Path to the openWakeWord .tflite wakeword model file"

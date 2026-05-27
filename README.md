@@ -57,7 +57,7 @@ sudo apt install alsa-utils ffmpeg
 
 ## Configuration
 
-All settings live under `gateway.auricle` in `~/.hermes/config.yaml`. Env vars take precedence.
+All settings live under a top-level `auricle:` key in `~/.hermes/config.yaml`. Env vars take precedence.
 
 | config.yaml key | Env var | Default | Description |
 |-----------------|---------|---------|-------------|
@@ -80,14 +80,13 @@ All settings live under `gateway.auricle` in `~/.hermes/config.yaml`. Env vars t
 
 Example `config.yaml` block:
 ```yaml
-gateway:
-  auricle:
-    mic_device: plughw:3,0
-    tts_voice: en-GB-LibbyNeural
-    vosk_model_path: ~/.hermes/plugins/hermes-auricle/models/vosk-model
-    oww_wakeword_model_path: ~/.hermes/plugins/hermes-auricle/models/wakeword.onnx
-    oww_melspec_model_path: ~/.hermes/plugins/hermes-auricle/models/melspectrogram.onnx
-    oww_embedding_model_path: ~/.hermes/plugins/hermes-auricle/models/embedding_model.onnx
+auricle:
+  mic_device: plughw:3,0
+  tts_voice: en-GB-LibbyNeural
+  vosk_model_path: ~/.hermes/plugins/hermes-auricle/models/vosk-model
+  oww_wakeword_model_path: ~/.hermes/plugins/hermes-auricle/models/wakeword.onnx
+  oww_melspec_model_path: ~/.hermes/plugins/hermes-auricle/models/melspectrogram.onnx
+  oww_embedding_model_path: ~/.hermes/plugins/hermes-auricle/models/embedding_model.onnx
 ```
 
 ---

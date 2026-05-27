@@ -528,7 +528,8 @@ def _env_enablement_fn():
 
 
 def _apply_yaml_config_fn(yaml_cfg, platform_cfg):
-    auricle_cfg = yaml_cfg.get("gateway", {}).get("auricle", {})
+    # platform_cfg is already yaml_cfg["auricle"] — the hook pre-slices it.
+    auricle_cfg = platform_cfg if isinstance(platform_cfg, dict) else {}
     if not auricle_cfg:
         return None
     updates = {}

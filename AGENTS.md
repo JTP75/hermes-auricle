@@ -116,3 +116,24 @@ No period at the end. No body unless the user asks for one.
 New features additions must be documented with at least one line in `README.md`.
 Patches and bug fixes should only be documented if they contradict what is in `README.md`.
 The amount of documentation for an addition should reflect the scale code change.
+
+## Known Gotchas
+
+Integration-level surprises that aren't obvious from the code alone.
+
+### Gotcha 1 — New env vars must be declared in `plugin.yaml`
+
+Every env var introduced in `consts.py` must have a corresponding entry in `plugin.yaml` under `optional_env` (or `requires_env` if mandatory).
+
+**Why:** Hermes reads `optional_env` from `plugin.yaml` to populate its setup UI and the known-keys set used for `.env` file sanitization. An undeclared var is invisible to `hermes setup` and won't be interactively configurable. It also won't appear in `hermes plugins info` output.
+
+Note: hermes loads **all** vars from `~/.hermes/.env` unconditionally — missing `optional_env` does not prevent the var from reaching `os.getenv()`. The failure mode is silent: setup and status tooling silently omits the var, which makes misconfiguration hard to diagnose.
+
+**How to apply:** For every new `ENV_*` constant added to `consts.py`, add a matching block to `plugin.yaml`:
+```yaml
+optional_env:
+  - name: AURICLE_MY_NEW_VAR
+    description: "What it controls and its default"
+    prompt: "Short label for hermes setup"
+    password: false
+```
