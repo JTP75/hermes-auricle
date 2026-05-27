@@ -39,8 +39,10 @@ from .consts import (
     DEFAULT_SLEEP_FLUX_THRESHOLD,
     DEFAULT_SLEEP_TIMEOUT,
     DEFAULT_SLEEP_WAKE_SENSITIVITY,
+    DEFAULT_STT_BACKEND,
     DEFAULT_TTS_VOICE,
     DEFAULT_VOSK_MODEL_PATH,
+    DEFAULT_WHISPER_MODEL_ID,
     EDGE_TTS_BIN,
     ENV_ACTIVE_LISTEN_DURATION,
     ENV_ALLOW_ALL_USERS,
@@ -57,8 +59,10 @@ from .consts import (
     ENV_SLEEP_FLUX_THRESHOLD,
     ENV_SLEEP_TIMEOUT,
     ENV_SLEEP_WAKE_SENSITIVITY,
+    ENV_STT_BACKEND,
     ENV_TTS_VOICE,
     ENV_VOSK_MODEL_PATH,
+    ENV_WHISPER_MODEL_ID,
     OWW_THRESHOLD,
     PLATFORM_HINT,
     PROACTIVE_PRE_SPEECH_PAUSE,
@@ -76,7 +80,7 @@ from .classifier import SystemMessageClassifier
 from .egress import EgressController
 from .fsm import FSM, State
 from .ingress import run_ingress_loop
-from .providers import EdgeTTSProvider, VoskSTTProvider
+from .providers import EdgeTTSProvider, VoskSTTProvider, WhisperSTTProvider
 from .sleep import SleepDetector
 
 logger = logging.getLogger(__name__)
@@ -103,9 +107,15 @@ class AuricleAdapter(BasePlatformAdapter):
         self._audio_buffer = AudioBuffer(AUDIO_RING_BUFFER_CHUNKS, tts_tail_seconds=TTS_ECHO_TAIL_SECONDS)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-        self._stt = VoskSTTProvider(
-            os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH))
-        )
+        _backend = os.getenv(ENV_STT_BACKEND, DEFAULT_STT_BACKEND).lower()
+        if _backend == "whisper":
+            self._stt = WhisperSTTProvider(
+                os.getenv(ENV_WHISPER_MODEL_ID, DEFAULT_WHISPER_MODEL_ID)
+            )
+        else:
+            self._stt = VoskSTTProvider(
+                os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH))
+            )
         self._tts    = EdgeTTSProvider(os.getenv(ENV_TTS_VOICE, DEFAULT_TTS_VOICE))
         self._egress = EgressController(self._tts, self._barge_in, self._audio_buffer)
 
@@ -178,26 +188,34 @@ class AuricleAdapter(BasePlatformAdapter):
             self._set_fatal_error("missing_assets", msg, retryable=False)
             return False
 
-        # Model paths
-        vosk_path = Path(os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH)))
-        ww_path   = Path(os.path.expanduser(os.getenv(ENV_OWW_WAKEWORD_MODEL_PATH, DEFAULT_OWW_WAKEWORD_MODEL_PATH)))
-        ms_path   = Path(os.path.expanduser(os.getenv(ENV_OWW_MELSPEC_MODEL_PATH, DEFAULT_OWW_MELSPEC_MODEL_PATH)))
-        emb_path  = Path(os.path.expanduser(os.getenv(ENV_OWW_EMBEDDING_MODEL_PATH, DEFAULT_OWW_EMBEDDING_MODEL_PATH)))
+        # OWW model paths — always required
+        ww_path  = Path(os.path.expanduser(os.getenv(ENV_OWW_WAKEWORD_MODEL_PATH, DEFAULT_OWW_WAKEWORD_MODEL_PATH)))
+        ms_path  = Path(os.path.expanduser(os.getenv(ENV_OWW_MELSPEC_MODEL_PATH, DEFAULT_OWW_MELSPEC_MODEL_PATH)))
+        emb_path = Path(os.path.expanduser(os.getenv(ENV_OWW_EMBEDDING_MODEL_PATH, DEFAULT_OWW_EMBEDDING_MODEL_PATH)))
 
-        for p, label in [(vosk_path, "vosk"), (ww_path, "wakeword"), (ms_path, "melspec"), (emb_path, "embedding")]:
+        for p, label in [(ww_path, "wakeword"), (ms_path, "melspec"), (emb_path, "embedding")]:
             if not p.exists():
                 msg = f"Model not found ({label}): {p}"
                 logger.error("[auricle] %s", msg)
                 self._set_fatal_error("missing_model", msg, retryable=True)
                 return False
 
-        # Load vosk
-        try:
-            logger.info("[auricle] loading vosk model")
+        # Vosk: validate local model path; Whisper: model is downloaded at load time
+        if isinstance(self._stt, VoskSTTProvider):
+            vosk_path = Path(os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH)))
+            if not vosk_path.exists():
+                msg = f"Model not found (vosk): {vosk_path}"
+                logger.error("[auricle] %s", msg)
+                self._set_fatal_error("missing_model", msg, retryable=True)
+                return False
             self._stt._model_path = str(vosk_path)
+
+        # Load STT
+        try:
+            logger.info("[auricle] loading STT model (%s)", type(self._stt).__name__)
             self._stt.load()
         except Exception as exc:
-            msg = f"Failed to load vosk model: {exc}"
+            msg = f"Failed to load STT model: {exc}"
             logger.error("[auricle] %s", msg)
             self._set_fatal_error("model_load_failed", msg, retryable=True)
             return False
@@ -451,19 +469,33 @@ def _parse_bool(value: str) -> bool:
 
 def check_requirements() -> bool:
     try:
-        import vosk          # noqa: F401
         import openwakeword  # noqa: F401
         import numpy         # noqa: F401
     except ImportError:
         return False
+    backend = os.getenv(ENV_STT_BACKEND, DEFAULT_STT_BACKEND).lower()
+    if backend == "whisper":
+        try:
+            import webrtcvad    # noqa: F401
+            import transformers # noqa: F401
+            import torch        # noqa: F401
+        except ImportError:
+            return False
+    else:
+        try:
+            import vosk  # noqa: F401
+        except ImportError:
+            return False
     return True
 
 
 def validate_config(cfg) -> bool:
     errors = []
-    vosk_path = Path(os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH)))
-    if not vosk_path.exists():
-        errors.append(f"Vosk model not found: {vosk_path}")
+    backend = os.getenv(ENV_STT_BACKEND, DEFAULT_STT_BACKEND).lower()
+    if backend != "whisper":
+        vosk_path = Path(os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH)))
+        if not vosk_path.exists():
+            errors.append(f"Vosk model not found: {vosk_path}")
     for env, default, label in [
         (ENV_OWW_WAKEWORD_MODEL_PATH,  DEFAULT_OWW_WAKEWORD_MODEL_PATH,  "OWW wakeword model"),
         (ENV_OWW_MELSPEC_MODEL_PATH,   DEFAULT_OWW_MELSPEC_MODEL_PATH,   "OWW melspec model"),
@@ -506,7 +538,9 @@ def _apply_yaml_config_fn(yaml_cfg, platform_cfg):
         ("active_listen_duration",   ENV_ACTIVE_LISTEN_DURATION,   str(DEFAULT_ACTIVE_LISTEN_DURATION)),
         ("session_resume",           ENV_SESSION_RESUME,           str(DEFAULT_SESSION_RESUME)),
         ("mute",                     ENV_MUTE,                     str(DEFAULT_MUTE)),
+        ("stt_backend",              ENV_STT_BACKEND,              DEFAULT_STT_BACKEND),
         ("vosk_model_path",          ENV_VOSK_MODEL_PATH,          DEFAULT_VOSK_MODEL_PATH),
+        ("whisper_model_id",         ENV_WHISPER_MODEL_ID,         DEFAULT_WHISPER_MODEL_ID),
         ("oww_wakeword_model_path",  ENV_OWW_WAKEWORD_MODEL_PATH,  DEFAULT_OWW_WAKEWORD_MODEL_PATH),
         ("oww_melspec_model_path",   ENV_OWW_MELSPEC_MODEL_PATH,   DEFAULT_OWW_MELSPEC_MODEL_PATH),
         ("oww_embedding_model_path", ENV_OWW_EMBEDDING_MODEL_PATH, DEFAULT_OWW_EMBEDDING_MODEL_PATH),
@@ -581,7 +615,8 @@ def register(ctx) -> None:
         pii_safe=True,
         allow_update_command=False,
         install_hint=(
-            "pip install vosk openwakeword numpy edge-tts\n"
-            "System packages: alsa-utils (arecord), pipewire (pw-play)"
+            "vosk backend (default): pip install vosk openwakeword numpy edge-tts\n"
+            "whisper backend: pip install transformers torch accelerate webrtcvad openwakeword numpy edge-tts\n"
+            "System packages: alsa-utils (arecord, aplay), ffmpeg"
         ),
     )

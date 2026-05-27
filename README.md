@@ -2,8 +2,8 @@
 
 A local voice platform plugin for [hermes](https://github.com/nousresearch/hermes-agent). Turns a Raspberry Pi + Jabra Speak 510 USB into an Alexa-style smart speaker. STT is fully offline (vosk); TTS uses Edge-TTS and requires an internet connection.
 
-- **Wakeword + STT**: [openWakeWord](https://github.com/dscripka/openWakeWord) (neural detector) + [vosk](https://alphacephei.com/vosk/) (offline STT)
-- **TTS + playback**: [edge-tts](https://github.com/rany2/edge-tts) piped to [PipeWire](https://pipewire.org/) (`pw-play`)
+- **Wakeword + STT**: [openWakeWord](https://github.com/dscripka/openWakeWord) (neural detector) + pluggable STT backend: [vosk](https://alphacephei.com/vosk/) (offline, CPU) or [distil-whisper](https://huggingface.co/distil-whisper/distil-large-v3) (GPU-accelerated via HuggingFace transformers)
+- **TTS + playback**: [edge-tts](https://github.com/rany2/edge-tts) piped to `aplay` via `ffmpeg`
 - **Target hardware**: Raspberry Pi + Jabra Speak 510 USB (mic + speaker in one device, hardware echo cancellation)
 
 ---
@@ -11,13 +11,17 @@ A local voice platform plugin for [hermes](https://github.com/nousresearch/herme
 ## Requirements
 
 **Python packages**
-```
+```bash
+# vosk backend (default, CPU-only)
 pip install vosk openwakeword numpy edge-tts
+
+# whisper backend (requires CUDA GPU)
+pip install transformers torch accelerate webrtcvad openwakeword numpy edge-tts
 ```
 
-**System packages** (Raspberry Pi / Debian)
+**System packages** (Debian/Ubuntu)
 ```
-sudo apt install alsa-utils pipewire
+sudo apt install alsa-utils ffmpeg
 ```
 
 **Models** -- place in `models/` or set env vars / `config.yaml` to point elsewhere:
@@ -62,7 +66,9 @@ All settings live under `gateway.auricle` in `~/.hermes/config.yaml`. Env vars t
 | `active_listen_duration` | `AURICLE_ACTIVE_LISTEN_DURATION` | `5` | Seconds of no-wakeword listen after TTS ends |
 | `session_resume` | `AURICLE_SESSION_RESUME` | `true` | Resume session history on hermes restart |
 | `mute` | `AURICLE_MUTE` | `false` | Disable wakeword detection on startup |
-| `vosk_model_path` | `AURICLE_VOSK_MODEL_PATH` | `models/vosk-model` | Path to vosk model directory |
+| `stt_backend` | `AURICLE_STT_BACKEND` | `vosk` | STT backend: `vosk` or `whisper` |
+| `vosk_model_path` | `AURICLE_VOSK_MODEL_PATH` | `models/vosk-model` | Path to vosk model directory (vosk backend only) |
+| `whisper_model_id` | `AURICLE_WHISPER_MODEL_ID` | `distil-whisper/distil-large-v3` | HuggingFace model ID (whisper backend only) |
 | `oww_wakeword_model_path` | `AURICLE_OWW_WAKEWORD_MODEL_PATH` | `models/wakeword.onnx` | Path to OWW wakeword `.onnx` model |
 | `oww_melspec_model_path` | `AURICLE_OWW_MELSPEC_MODEL_PATH` | `models/melspectrogram.onnx` | Path to OWW melspec preprocessor |
 | `oww_embedding_model_path` | `AURICLE_OWW_EMBEDDING_MODEL_PATH` | `models/embedding_model.onnx` | Path to OWW embedding preprocessor |

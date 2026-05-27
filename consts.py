@@ -44,7 +44,9 @@ ENV_TTS_VOICE                = "AURICLE_TTS_VOICE"
 ENV_ACTIVE_LISTEN_DURATION   = "AURICLE_ACTIVE_LISTEN_DURATION"
 ENV_SESSION_RESUME           = "AURICLE_SESSION_RESUME"
 ENV_MUTE                     = "AURICLE_MUTE"
+ENV_STT_BACKEND              = "AURICLE_STT_BACKEND"
 ENV_VOSK_MODEL_PATH          = "AURICLE_VOSK_MODEL_PATH"
+ENV_WHISPER_MODEL_ID         = "AURICLE_WHISPER_MODEL_ID"
 ENV_OWW_WAKEWORD_MODEL_PATH  = "AURICLE_OWW_WAKEWORD_MODEL_PATH"
 ENV_OWW_MELSPEC_MODEL_PATH   = "AURICLE_OWW_MELSPEC_MODEL_PATH"
 ENV_OWW_EMBEDDING_MODEL_PATH = "AURICLE_OWW_EMBEDDING_MODEL_PATH"
@@ -58,14 +60,24 @@ DEFAULT_TTS_VOICE                = "en-GB-LibbyNeural"
 DEFAULT_ACTIVE_LISTEN_DURATION   = 5       # seconds
 DEFAULT_SESSION_RESUME           = True
 DEFAULT_MUTE                     = False
+DEFAULT_STT_BACKEND              = "vosk"
 DEFAULT_VOSK_MODEL_PATH          = str(_MODELS_DIR / "vosk-model")
+DEFAULT_WHISPER_MODEL_ID         = "distil-whisper/distil-large-v3"
 DEFAULT_OWW_WAKEWORD_MODEL_PATH  = str(_MODELS_DIR / "wakeword.onnx")
 DEFAULT_OWW_MELSPEC_MODEL_PATH   = str(_MODELS_DIR / "melspectrogram.onnx")
 DEFAULT_OWW_EMBEDDING_MODEL_PATH = str(_MODELS_DIR / "embedding_model.onnx")
 
+# ── Whisper STT (VAD tuning) ───────────────────────────────────────────────
+WHISPER_VAD_AGGRESSIVENESS = 2    # webrtcvad 0 (permissive) – 3 (strict)
+WHISPER_VAD_BLOCK_MS       = 30   # VAD frame size; must be 10, 20, or 30
+WHISPER_SILENCE_FRAMES     = 25   # consecutive silent frames → end of utterance (~750 ms)
+WHISPER_MIN_SPEECH_FRAMES  = 10   # minimum voiced frames before transcribing (~300 ms)
+WHISPER_PADDING_MS         = 300  # ring buffer context to avoid clipping word starts
+
 # ── Audio ──────────────────────────────────────────────────────────────────
 AUDIO_CHUNK_BYTES        = 1280   # OWW hard requirement: 40ms at 16kHz 16-bit mono
 SAMPLE_RATE              = 16000
+WHISPER_FRAME_BYTES      = int(SAMPLE_RATE * WHISPER_VAD_BLOCK_MS / 1000) * 2  # 960 bytes
 OWW_THRESHOLD            = 0.5
 AUDIO_RING_BUFFER_SECONDS = 2.0
 AUDIO_RING_BUFFER_CHUNKS  = int(AUDIO_RING_BUFFER_SECONDS * SAMPLE_RATE * 2 / AUDIO_CHUNK_BYTES)  # 50
