@@ -54,6 +54,10 @@ ENV_OWW_EMBEDDING_MODEL_PATH = "AURICLE_OWW_EMBEDDING_MODEL_PATH"
 ENV_ALLOWED_USERS            = "AURICLE_ALLOWED_USERS"
 ENV_ALLOW_ALL_USERS          = "AURICLE_ALLOW_ALL_USERS"
 ENV_HOME_CHANNEL             = "AURICLE_HOME_CHANNEL"
+ENV_AUDIO_INPUT              = "AURICLE_AUDIO_INPUT"
+ENV_AUDIO_OUTPUT             = "AURICLE_AUDIO_OUTPUT"
+ENV_SD_INPUT_DEVICE          = "AURICLE_SD_INPUT_DEVICE"
+ENV_SD_OUTPUT_DEVICE         = "AURICLE_SD_OUTPUT_DEVICE"
 
 # ── Defaults ───────────────────────────────────────────────────────────────
 DEFAULT_MIC_DEVICE               = "plughw:3,0"
@@ -67,6 +71,10 @@ DEFAULT_WHISPER_MODEL_ID         = "distil-whisper/distil-large-v3"
 DEFAULT_OWW_WAKEWORD_MODEL_PATH  = str(_MODELS_DIR / "wakeword.onnx")
 DEFAULT_OWW_MELSPEC_MODEL_PATH   = str(_MODELS_DIR / "melspectrogram.onnx")
 DEFAULT_OWW_EMBEDDING_MODEL_PATH = str(_MODELS_DIR / "embedding_model.onnx")
+DEFAULT_AUDIO_INPUT              = "arecord"
+DEFAULT_AUDIO_OUTPUT             = "aplay"
+DEFAULT_SD_INPUT_DEVICE          = ""
+DEFAULT_SD_OUTPUT_DEVICE         = ""
 
 # ── Whisper STT (VAD tuning) ───────────────────────────────────────────────
 WHISPER_VAD_AGGRESSIVENESS = 2    # webrtcvad 0 (permissive) – 3 (strict)
