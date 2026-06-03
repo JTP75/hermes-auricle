@@ -10,8 +10,12 @@ author: Justin Pacella
 
 optional_env:
   - name: AURICLE_MIC_DEVICE
-    description: "ALSA device string for arecord (default: plughw:3,0)"
+    description: "ALSA device string for arecord (default: plughw:0,0)"
     prompt: "Mic device"
+    password: false
+  - name: AURICLE_SPEAKER_DEVICE
+    description: "ALSA device string for aplay (default: plughw:0,0)"
+    prompt: "Speaker device"
     password: false
   - name: AURICLE_TTS_VOICE
     description: "edge-tts voice name (default: en-GB-LibbyNeural)"

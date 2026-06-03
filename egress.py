@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from .audio_buffer import AudioBuffer
-from .consts import APLAY_BIN, APLAY_DEVICE, FFMPEG_BIN
+from .consts import APLAY_BIN, ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE, FFMPEG_BIN
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +120,7 @@ class EgressController:
     async def _spawn_pw_play(self) -> asyncio.subprocess.Process:
         # asyncio StreamReader has no fileno() so we can't pass ffmpeg.stdout
         # directly to aplay. Use os.pipe() for a real fd-based connection.
+        speaker_device = os.getenv(ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE)
         r_fd, w_fd = os.pipe()
         try:
             ffmpeg = await asyncio.create_subprocess_exec(
@@ -135,7 +136,7 @@ class EgressController:
             os.close(w_fd)  # parent doesn't need the write end
         try:
             await asyncio.create_subprocess_exec(
-                APLAY_BIN, "-D", APLAY_DEVICE,
+                APLAY_BIN, "-D", speaker_device,
                 "-r", "48000", "-c", "2", "-f", "S16_LE",
                 stdin=r_fd,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -165,8 +166,9 @@ class EgressController:
 
     async def play_file(self, path: Path) -> None:
         """Play a WAV asset file directly (for notify/wakeup/tosleep/etc.)."""
+        speaker_device = os.getenv(ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE)
         proc = await asyncio.create_subprocess_exec(
-            APLAY_BIN, "-D", APLAY_DEVICE, str(path),
+            APLAY_BIN, "-D", speaker_device, str(path),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )

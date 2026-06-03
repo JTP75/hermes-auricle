@@ -40,6 +40,7 @@ MISINPUT_PHRASES: frozenset[str] = frozenset({
 
 # ── Env var names ──────────────────────────────────────────────────────────
 ENV_MIC_DEVICE               = "AURICLE_MIC_DEVICE"
+ENV_SPEAKER_DEVICE           = "AURICLE_SPEAKER_DEVICE"
 ENV_TTS_VOICE                = "AURICLE_TTS_VOICE"
 ENV_ACTIVE_LISTEN_DURATION   = "AURICLE_ACTIVE_LISTEN_DURATION"
 ENV_SESSION_RESUME           = "AURICLE_SESSION_RESUME"
@@ -56,7 +57,8 @@ ENV_ALLOW_ALL_USERS          = "AURICLE_ALLOW_ALL_USERS"
 ENV_HOME_CHANNEL             = "AURICLE_HOME_CHANNEL"
 
 # ── Defaults ───────────────────────────────────────────────────────────────
-DEFAULT_MIC_DEVICE               = "plughw:3,0"
+DEFAULT_MIC_DEVICE               = "plughw:0,0"
+DEFAULT_SPEAKER_DEVICE           = "plughw:0,0"
 DEFAULT_TTS_VOICE                = "en-GB-LibbyNeural"
 DEFAULT_ACTIVE_LISTEN_DURATION   = 5       # seconds
 DEFAULT_SESSION_RESUME           = True
@@ -112,15 +114,14 @@ PROACTIVE_PRE_SPEECH_PAUSE = 1.0   # seconds of silence after notify before TTS
 EDGE_TTS_BIN   = "edge-tts"
 APLAY_BIN      = "aplay"
 FFMPEG_BIN     = "ffmpeg"
-APLAY_DEVICE   = "plughw:2,0"   # Jabra SPEAK 510 USB on Jetson Orin Nano
 
 # Legacy — kept for reference, no longer used
 PW_PLAY_BIN    = "pw-play"
 PW_PLAY_TARGET = "Jabra SPEAK 510 USB"
 
 # ── Voice commands (exact whole-transcript match, case-insensitive) ─────────
-CLEAR_COMMANDS: Tuple[str, ...] = ("clear", "reset", "it's clear", "its clear", "the clear")
-STOP_COMMANDS:  Tuple[str, ...] = ("stop", "top", "the stop", "its stop", "it's stop")
+CLEAR_COMMANDS: Tuple[str, ...] = ("clear", "reset", "it's clear", "its clear", "the clear", "clear.", "Clear.")
+STOP_COMMANDS:  Tuple[str, ...] = ("stop", "top", "the stop", "its stop", "it's stop", "stop.", "Stop.")
 
 # ── Internal dispatch sentinels ────────────────────────────────────────────
 _CMD_CLEAR = "__AURICLE_CLEAR__"

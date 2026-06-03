@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -11,7 +12,8 @@ from .audio_buffer import AudioBuffer
 from .consts import (
     AUDIO_CHUNK_BYTES,
     APLAY_BIN,
-    APLAY_DEVICE,
+    ENV_SPEAKER_DEVICE,
+    DEFAULT_SPEAKER_DEVICE,
     ASSET_CONFUSED,
     ASSET_TOSLEEP,
     ASSET_WAKEUP,
@@ -30,8 +32,9 @@ logger = logging.getLogger(__name__)
 
 def _play_asset_sync(path) -> None:
     """Blocking WAV playback for short feedback assets."""
+    speaker_device = os.getenv(ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE)
     subprocess.run(
-        [APLAY_BIN, "-D", APLAY_DEVICE, str(path)],
+        [APLAY_BIN, "-D", speaker_device, str(path)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
