@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import threading
@@ -19,6 +18,7 @@ from gateway.platforms.base import (
 
 from .consts import (
     ALL_ASSETS,
+    APLAY_BIN,
     AUDIO_CHUNK_BYTES,
     AUDIO_RING_BUFFER_CHUNKS,
     TTS_ECHO_TAIL_SECONDS,
@@ -40,17 +40,25 @@ from .consts import (
     DEFAULT_SLEEP_FLUX_THRESHOLD,
     DEFAULT_SLEEP_TIMEOUT,
     DEFAULT_SLEEP_WAKE_SENSITIVITY,
+    DEFAULT_AUDIO_INPUT,
+    DEFAULT_AUDIO_OUTPUT,
+    DEFAULT_SD_INPUT_DEVICE,
+    DEFAULT_SD_OUTPUT_DEVICE,
     DEFAULT_STT_BACKEND,
     DEFAULT_TTS_VOICE,
     DEFAULT_VOSK_MODEL_PATH,
     DEFAULT_WHISPER_MODEL_ID,
     EDGE_TTS_BIN,
+    FFMPEG_BIN,
     ENV_ACTIVE_LISTEN_DURATION,
     ENV_ALLOW_ALL_USERS,
     ENV_ALLOWED_USERS,
+    ENV_AUDIO_INPUT,
+    ENV_AUDIO_OUTPUT,
     ENV_HOME_CHANNEL,
     ENV_MIC_DEVICE,
-    ENV_SPEAKER_DEVICE,
+    ENV_SD_INPUT_DEVICE,
+    ENV_SD_OUTPUT_DEVICE,
     ENV_MUTE,
     ENV_OWW_EMBEDDING_MODEL_PATH,
     ENV_OWW_MELSPEC_MODEL_PATH,
@@ -69,8 +77,6 @@ from .consts import (
     OWW_THRESHOLD,
     PLATFORM_HINT,
     PROACTIVE_PRE_SPEECH_PAUSE,
-    PW_PLAY_BIN,
-    PW_PLAY_TARGET,
     RETRY_DELAY_SECONDS,
     SAMPLE_RATE,
     SLEEP_EMA_ALPHA,
@@ -79,6 +85,14 @@ from .consts import (
     _CMD_STOP,
 )
 from .audio_buffer import AudioBuffer
+from .audio_io import (
+    AplayOutput,
+    ArecordInput,
+    AudioInput,
+    AudioOutput,
+    SounddeviceInput,
+    SounddeviceOutput,
+)
 from .classifier import SystemMessageClassifier
 from .egress import EgressController
 from .fsm import FSM, State
@@ -121,8 +135,10 @@ class AuricleAdapter(BasePlatformAdapter):
             self._stt = VoskSTTProvider(
                 os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH))
             )
-        self._tts    = EdgeTTSProvider(os.getenv(ENV_TTS_VOICE, DEFAULT_TTS_VOICE))
-        self._egress = EgressController(self._tts, self._barge_in, self._audio_buffer)
+        self._tts          = EdgeTTSProvider(os.getenv(ENV_TTS_VOICE, DEFAULT_TTS_VOICE))
+        self._audio_input  = _make_audio_input()
+        self._audio_output = _make_audio_output()
+        self._egress       = EgressController(self._tts, self._barge_in, self._audio_buffer, self._audio_output)
 
         self._fsm.muted = _parse_bool(os.getenv(ENV_MUTE, str(DEFAULT_MUTE)))
         self._session_resume = _parse_bool(os.getenv(ENV_SESSION_RESUME, str(DEFAULT_SESSION_RESUME)))
@@ -147,7 +163,6 @@ class AuricleAdapter(BasePlatformAdapter):
         )
         self._last_dispatch_time: Optional[float] = None
 
-        self._arecord_proc:   Optional[subprocess.Popen]  = None
         self._ingress_thread: Optional[threading.Thread]  = None
         self._retry_task:     Optional[asyncio.Task]      = None
         self._pending_clear:  bool                        = False
@@ -178,7 +193,12 @@ class AuricleAdapter(BasePlatformAdapter):
     def _connect_real(self) -> bool:
         """Synchronous: validate environment, load models, start subprocess and ingress thread."""
         # Binaries
-        for binary in (PW_PLAY_BIN, EDGE_TTS_BIN, "arecord"):
+        required_binaries = [FFMPEG_BIN, EDGE_TTS_BIN]
+        if os.getenv(ENV_AUDIO_INPUT, DEFAULT_AUDIO_INPUT).lower() == "arecord":
+            required_binaries.append("arecord")
+        if os.getenv(ENV_AUDIO_OUTPUT, DEFAULT_AUDIO_OUTPUT).lower() == "aplay":
+            required_binaries.append(APLAY_BIN)
+        for binary in required_binaries:
             if not shutil.which(binary):
                 msg = f"Required binary not found on PATH: {binary}"
                 logger.error("[auricle] %s", msg)
@@ -242,30 +262,26 @@ class AuricleAdapter(BasePlatformAdapter):
             self._set_fatal_error("model_load_failed", msg, retryable=True)
             return False
 
-        # Probe mic
-        mic_device = os.getenv(ENV_MIC_DEVICE, DEFAULT_MIC_DEVICE)
-        try:
-            probe = subprocess.run(
-                ["arecord", "-D", mic_device, "-f", "S16_LE", "-c", "1",
-                 "-r", str(SAMPLE_RATE), "-t", "raw", "-d", "1", "-q"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=3,
-            )
-            # returncode 0 or SIGTERM (-15) both mean the device exists
-            if probe.returncode not in (0, -15):
-                msg = f"Mic probe failed for {mic_device}: {probe.stderr.decode().strip()}"
-                logger.error("[auricle] %s", msg)
-                self._set_fatal_error("mic_unavailable", msg, retryable=True)
-                return False
-        except subprocess.TimeoutExpired:
-            pass  # captured audio for full duration — device is fine
+        # Probe mic (arecord only; sounddevice surfaces errors on open())
+        if os.getenv(ENV_AUDIO_INPUT, DEFAULT_AUDIO_INPUT).lower() == "arecord":
+            mic_device = os.getenv(ENV_MIC_DEVICE, DEFAULT_MIC_DEVICE)
+            try:
+                probe = subprocess.run(
+                    ["arecord", "-D", mic_device, "-f", "S16_LE", "-c", "1",
+                     "-r", str(SAMPLE_RATE), "-t", "raw", "-d", "1", "-q"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=3,
+                )
+                # returncode 0 or SIGTERM (-15) both mean the device exists
+                if probe.returncode not in (0, -15):
+                    msg = f"Mic probe failed for {mic_device}: {probe.stderr.decode().strip()}"
+                    logger.error("[auricle] %s", msg)
+                    self._set_fatal_error("mic_unavailable", msg, retryable=True)
+                    return False
+            except subprocess.TimeoutExpired:
+                pass  # captured audio for full duration — device is fine
 
-        # Start arecord
-        self._arecord_proc = subprocess.Popen(
-            ["arecord", "-D", mic_device, "-f", "S16_LE", "-c", "1",
-             "-r", str(SAMPLE_RATE), "-t", "raw", "-q"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+        # Start audio input
+        self._audio_input.open()
 
         # Start ingress thread
         sleep_detector = SleepDetector(
@@ -282,7 +298,8 @@ class AuricleAdapter(BasePlatformAdapter):
             name="auricle-ingress",
             daemon=True,
             kwargs=dict(
-                arecord_proc=self._arecord_proc,
+                audio_input=self._audio_input,
+                audio_output=self._audio_output,
                 oww=oww,
                 wakeword_key=wakeword_key,
                 stt_provider=self._stt,
@@ -316,13 +333,7 @@ class AuricleAdapter(BasePlatformAdapter):
         if isinstance(self._stt, WhisperSTTProvider):
             self._stt.terminate()
 
-        if self._arecord_proc:
-            try:
-                self._arecord_proc.kill()
-                self._arecord_proc.wait(timeout=2)
-            except Exception:
-                pass
-            self._arecord_proc = None
+        self._audio_input.close()
 
         self._barge_in.set()
         if self._egress._worker_task:
@@ -395,12 +406,7 @@ class AuricleAdapter(BasePlatformAdapter):
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         """Play a pre-synthesized audio file (hermes TTS tool path — no file attachment)."""
         logger.info("[auricle] play_tts(): %s", audio_path)
-        proc = await asyncio.create_subprocess_exec(
-            PW_PLAY_BIN, f"--target={PW_PLAY_TARGET}", audio_path,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
+        await self._audio_output.play_file(Path(audio_path))
         return SendResult(success=True)
 
     async def send_exec_approval(
@@ -475,6 +481,30 @@ def _parse_bool(value: str) -> bool:
     return str(value).lower() in ("1", "true", "yes", "on")
 
 
+def _parse_sd_device(value: str | None):
+    """Convert an env var value to a sounddevice device specifier (int index, str name, or None)."""
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _make_audio_input() -> AudioInput:
+    backend = os.getenv(ENV_AUDIO_INPUT, DEFAULT_AUDIO_INPUT).lower()
+    if backend == "sounddevice":
+        return SounddeviceInput(device=_parse_sd_device(os.getenv(ENV_SD_INPUT_DEVICE, DEFAULT_SD_INPUT_DEVICE)))
+    return ArecordInput(device=os.getenv(ENV_MIC_DEVICE, DEFAULT_MIC_DEVICE))
+
+
+def _make_audio_output() -> AudioOutput:
+    backend = os.getenv(ENV_AUDIO_OUTPUT, DEFAULT_AUDIO_OUTPUT).lower()
+    if backend == "sounddevice":
+        return SounddeviceOutput(device=_parse_sd_device(os.getenv(ENV_SD_OUTPUT_DEVICE, DEFAULT_SD_OUTPUT_DEVICE)))
+    return AplayOutput()
+
+
 def check_requirements() -> bool:
     try:
         import openwakeword  # noqa: F401
@@ -489,6 +519,12 @@ def check_requirements() -> bool:
     else:
         try:
             import vosk  # noqa: F401
+        except ImportError:
+            return False
+    if (os.getenv(ENV_AUDIO_INPUT, DEFAULT_AUDIO_INPUT).lower() == "sounddevice" or
+            os.getenv(ENV_AUDIO_OUTPUT, DEFAULT_AUDIO_OUTPUT).lower() == "sounddevice"):
+        try:
+            import sounddevice  # noqa: F401
         except ImportError:
             return False
     return True
@@ -582,21 +618,13 @@ async def _standalone_send(
     if not clean:
         return {"success": True}
     try:
-        ding = await asyncio.create_subprocess_exec(
-            PW_PLAY_BIN, f"--target={PW_PLAY_TARGET}", str(ASSET_NOTIFY),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        await ding.wait()
+        audio_out = _make_audio_output()
+        await audio_out.play_file(ASSET_NOTIFY)
         await asyncio.sleep(PROACTIVE_PRE_SPEECH_PAUSE)
-        cmd = (
-            f"{shlex.quote(EDGE_TTS_BIN)} --voice {shlex.quote(voice)} "
-            f"--text {shlex.quote(clean)} --write-media - | "
-            f"{shlex.quote(PW_PLAY_BIN)} --target={shlex.quote(PW_PLAY_TARGET)} -"
-        )
-        proc = await asyncio.create_subprocess_shell(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        await proc.wait()
+        tts = EdgeTTSProvider(voice)
+        mp3_bytes = b"".join([chunk async for chunk in tts.stream_audio(clean)])
+        handle = await audio_out.play_bytes(mp3_bytes)
+        await handle.wait()
     except Exception as exc:
         return {"error": str(exc)}
     return {"success": True}

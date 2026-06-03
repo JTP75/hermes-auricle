@@ -1,13 +1,11 @@
 import asyncio
 import logging
-import os
 import re
-import signal
 from pathlib import Path
 from typing import Optional
 
 from .audio_buffer import AudioBuffer
-from .consts import APLAY_BIN, ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE, FFMPEG_BIN
+from .audio_io import AudioOutput, PlaybackHandle
 
 logger = logging.getLogger(__name__)
 
@@ -33,22 +31,24 @@ class EgressController:
         tts_provider,
         barge_in_event: asyncio.Event,
         audio_buffer: AudioBuffer,
+        audio_output: AudioOutput,
     ) -> None:
         self._tts          = tts_provider
         self._barge_in     = barge_in_event
         self._audio_buffer = audio_buffer
+        self._audio_output = audio_output
 
-        self._processed_len: int                              = 0
-        self._text_buffer:   str                              = ""
-        self._queue:         asyncio.Queue                    = asyncio.Queue()
-        self._active_proc:   Optional[asyncio.subprocess.Process] = None
-        self._worker_task:   Optional[asyncio.Task]           = None
+        self._processed_len: int                    = 0
+        self._text_buffer:   str                    = ""
+        self._queue:         asyncio.Queue          = asyncio.Queue()
+        self._active_handle: Optional[PlaybackHandle] = None
+        self._worker_task:   Optional[asyncio.Task] = None
 
     def reset(self) -> None:
         self._processed_len = 0
         self._text_buffer   = ""
         self._queue         = asyncio.Queue()
-        self._active_proc   = None
+        self._active_handle = None
         self._worker_task   = None
         self._barge_in.clear()
         self._audio_buffer.set_tts_active(False)
@@ -106,46 +106,10 @@ class EgressController:
                 self._worker_task.cancel()
 
     def kill_active(self) -> None:
-        """Kill the active ffmpeg+aplay processes. Safe to call from any thread."""
-        proc = self._active_proc
-        if proc is not None:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-
-    async def _spawn_pw_play(self) -> asyncio.subprocess.Process:
-        # asyncio StreamReader has no fileno() so we can't pass ffmpeg.stdout
-        # directly to aplay. Use os.pipe() for a real fd-based connection.
-        speaker_device = os.getenv(ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE)
-        r_fd, w_fd = os.pipe()
-        try:
-            ffmpeg = await asyncio.create_subprocess_exec(
-                FFMPEG_BIN, "-hide_banner", "-loglevel", "quiet",
-                "-i", "pipe:0",
-                "-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=w_fd,
-                stderr=asyncio.subprocess.DEVNULL,
-                preexec_fn=os.setsid,
-            )
-        finally:
-            os.close(w_fd)  # parent doesn't need the write end
-        try:
-            await asyncio.create_subprocess_exec(
-                APLAY_BIN, "-D", speaker_device,
-                "-r", "48000", "-c", "2", "-f", "S16_LE",
-                stdin=r_fd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        finally:
-            os.close(r_fd)  # parent doesn't need the read end
-        # return ffmpeg — killing it closes the write side, draining aplay cleanly
-        return ffmpeg
+        """Kill the active playback. Safe to call from any thread."""
+        handle = self._active_handle
+        if handle is not None:
+            handle.kill()
 
     async def _fetch_audio(self, sentence: str) -> bytes:
         """Collect all edge-tts audio bytes for a sentence into memory."""
@@ -156,23 +120,9 @@ class EgressController:
             chunks.append(chunk)
         return b"".join(chunks)
 
-    async def _play_audio_bytes(self, audio: bytes) -> asyncio.subprocess.Process:
-        """Spawn pw-play with pre-fetched audio bytes (zero-gap between sentences)."""
-        proc = await self._spawn_pw_play()
-        proc.stdin.write(audio)
-        await proc.stdin.drain()
-        proc.stdin.close()
-        return proc
-
     async def play_file(self, path: Path) -> None:
         """Play a WAV asset file directly (for notify/wakeup/tosleep/etc.)."""
-        speaker_device = os.getenv(ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE)
-        proc = await asyncio.create_subprocess_exec(
-            APLAY_BIN, "-D", speaker_device, str(path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
+        await self._audio_output.play_file(path)
 
     async def speak(self, text: str, *, priority: bool = False) -> None:
         """Synthesize and play a short phrase immediately, outside the worker queue.
@@ -185,8 +135,8 @@ class EgressController:
         else:
             audio = await self._fetch_audio(text)
         if audio:
-            proc = await self._play_audio_bytes(audio)
-            await proc.wait()
+            handle = await self._audio_output.play_bytes(audio)
+            await handle.wait()
 
     async def _worker(self) -> None:
         # lookahead: a sentence already dequeued (and its audio prefetched) but not yet played.
@@ -224,12 +174,12 @@ class EgressController:
             try:
                 if not audio:
                     audio = await self._fetch_audio(sentence)
-                proc = await self._play_audio_bytes(audio)
+                handle = await self._audio_output.play_bytes(audio)
 
-                self._active_proc = proc
+                self._active_handle = handle
                 self._audio_buffer.set_tts_active(True)
 
-                play_task     = asyncio.create_task(proc.wait())
+                play_task     = asyncio.create_task(handle.wait())
                 get_next_task = asyncio.create_task(self._queue.get())
 
                 done, _ = await asyncio.wait(
@@ -259,7 +209,7 @@ class EgressController:
                 logger.error("[auricle] TTS playback error: %s", exc)
             finally:
                 self._audio_buffer.set_tts_active(False)
-                self._active_proc = None
+                self._active_handle = None
                 self._queue.task_done()
 
     def _drain(self) -> None:

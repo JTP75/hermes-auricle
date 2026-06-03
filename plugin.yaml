@@ -81,3 +81,19 @@ optional_env:
     description: "Seconds of inactivity before session history is cleared (default: 3600)"
     prompt: "Session clear-after duration (seconds)"
     password: false
+  - name: AURICLE_AUDIO_INPUT
+    description: "Audio input backend: arecord (default, Linux/ALSA) or sounddevice (cross-platform)"
+    prompt: "Audio input backend (arecord or sounddevice)"
+    password: false
+  - name: AURICLE_AUDIO_OUTPUT
+    description: "Audio output backend: aplay (default, Linux/ALSA) or sounddevice (cross-platform)"
+    prompt: "Audio output backend (aplay or sounddevice)"
+    password: false
+  - name: AURICLE_SD_INPUT_DEVICE
+    description: "sounddevice input device — integer index or name substring (default: system default)"
+    prompt: "sounddevice input device index or name"
+    password: false
+  - name: AURICLE_SD_OUTPUT_DEVICE
+    description: "sounddevice output device — integer index or name substring (default: system default)"
+    prompt: "sounddevice output device index or name"
+    password: false

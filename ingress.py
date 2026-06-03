@@ -1,7 +1,5 @@
 import asyncio
 import logging
-import os
-import subprocess
 import threading
 import time
 from typing import Callable, Coroutine
@@ -9,11 +7,8 @@ from typing import Callable, Coroutine
 import numpy as np
 
 from .audio_buffer import AudioBuffer
+from .audio_io import AudioInput, AudioOutput
 from .consts import (
-    AUDIO_CHUNK_BYTES,
-    APLAY_BIN,
-    ENV_SPEAKER_DEVICE,
-    DEFAULT_SPEAKER_DEVICE,
     ASSET_CONFUSED,
     ASSET_TOSLEEP,
     ASSET_WAKEUP,
@@ -30,19 +25,10 @@ from .sleep import SleepDetector, SleepSignal
 logger = logging.getLogger(__name__)
 
 
-def _play_asset_sync(path) -> None:
-    """Blocking WAV playback for short feedback assets."""
-    speaker_device = os.getenv(ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE)
-    subprocess.run(
-        [APLAY_BIN, "-D", speaker_device, str(path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-
 def run_ingress_loop(
     *,
-    arecord_proc: subprocess.Popen,
+    audio_input: AudioInput,
+    audio_output: AudioOutput,
     oww,
     wakeword_key: str,
     stt_provider,
@@ -66,12 +52,11 @@ def run_ingress_loop(
     active_listen_deadline: float | None = None
     consecutive_misinputs: int = 0
     was_idle: bool = False
-    stdout = arecord_proc.stdout
 
     while not stop_event.is_set():
-        data = stdout.read(AUDIO_CHUNK_BYTES)
+        data = audio_input.read_chunk()
         if not data:
-            logger.error("[auricle] arecord closed unexpectedly — ingress exiting")
+            logger.error("[auricle] audio input closed unexpectedly — ingress exiting")
             break
 
         audio_buffer.append(data)
@@ -101,7 +86,7 @@ def run_ingress_loop(
                 logger.info("[auricle] wakeword detected (p=%.2f) → AWAITING_UTTERANCE", prob)
                 oww.reset()
                 stt_provider.reset()
-                _play_asset_sync(ASSET_WAKEUP)
+                audio_output.play_file_sync(ASSET_WAKEUP)
                 fsm.transition(State.AWAITING_UTTERANCE)
                 active_listen_deadline = None  # armed on first chunk in new state
 
@@ -133,7 +118,7 @@ def run_ingress_loop(
                 logger.info("[auricle] active-listen expired → IDLE")
                 oww.reset()
                 stt_provider.reset()
-                _play_asset_sync(ASSET_TOSLEEP)
+                audio_output.play_file_sync(ASSET_TOSLEEP)
                 fsm.transition(State.IDLE)
                 active_listen_deadline = None
                 continue
@@ -157,13 +142,13 @@ def run_ingress_loop(
                     consecutive_misinputs += 1
                     if consecutive_misinputs >= MISINPUT_MAX_CONSECUTIVE:
                         logger.info("[auricle] misinput limit reached → IDLE")
-                        _play_asset_sync(ASSET_TOSLEEP)
+                        audio_output.play_file_sync(ASSET_TOSLEEP)
                         fsm.transition(State.IDLE)
                         consecutive_misinputs = 0
                     else:
                         logger.info("[auricle] misinput %d/%d → AWAITING_UTTERANCE",
                                     consecutive_misinputs, MISINPUT_MAX_CONSECUTIVE)
-                        _play_asset_sync(ASSET_CONFUSED)
+                        audio_output.play_file_sync(ASSET_CONFUSED)
                         fsm.transition(State.AWAITING_UTTERANCE)
                 else:
                     consecutive_misinputs = 0
