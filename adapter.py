@@ -29,6 +29,7 @@ from .consts import (
     CHAT_ID,
     DEFAULT_ACTIVE_LISTEN_DURATION,
     DEFAULT_MIC_DEVICE,
+    DEFAULT_SPEAKER_DEVICE,
     DEFAULT_MUTE,
     DEFAULT_OWW_EMBEDDING_MODEL_PATH,
     DEFAULT_OWW_MELSPEC_MODEL_PATH,
@@ -575,6 +576,7 @@ def _apply_yaml_config_fn(yaml_cfg, platform_cfg):
     updates = {}
     mappings = [
         ("mic_device",               ENV_MIC_DEVICE,               DEFAULT_MIC_DEVICE),
+        ("speaker_device",           ENV_SPEAKER_DEVICE,           DEFAULT_SPEAKER_DEVICE),
         ("tts_voice",                ENV_TTS_VOICE,                DEFAULT_TTS_VOICE),
         ("active_listen_duration",   ENV_ACTIVE_LISTEN_DURATION,   str(DEFAULT_ACTIVE_LISTEN_DURATION)),
         ("session_resume",           ENV_SESSION_RESUME,           str(DEFAULT_SESSION_RESUME)),
