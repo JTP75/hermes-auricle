@@ -57,6 +57,7 @@ from .consts import (
     ENV_AUDIO_OUTPUT,
     ENV_HOME_CHANNEL,
     ENV_MIC_DEVICE,
+    ENV_SPEAKER_DEVICE,
     ENV_SD_INPUT_DEVICE,
     ENV_SD_OUTPUT_DEVICE,
     ENV_MUTE,
@@ -502,7 +503,7 @@ def _make_audio_output() -> AudioOutput:
     backend = os.getenv(ENV_AUDIO_OUTPUT, DEFAULT_AUDIO_OUTPUT).lower()
     if backend == "sounddevice":
         return SounddeviceOutput(device=_parse_sd_device(os.getenv(ENV_SD_OUTPUT_DEVICE, DEFAULT_SD_OUTPUT_DEVICE)))
-    return AplayOutput()
+    return AplayOutput(device=os.getenv(ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE))
 
 
 def check_requirements() -> bool:

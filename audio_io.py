@@ -6,7 +6,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from .consts import APLAY_BIN, APLAY_DEVICE, AUDIO_CHUNK_BYTES, FFMPEG_BIN, SAMPLE_RATE
+from .consts import APLAY_BIN, AUDIO_CHUNK_BYTES, FFMPEG_BIN, SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +102,9 @@ class ArecordInput(AudioInput):
 
 
 class AplayOutput(AudioOutput):
+    def __init__(self, device: str) -> None:
+        self._device = device
+
     async def play_bytes(self, audio_bytes: bytes) -> PlaybackHandle:
         r_fd, w_fd = os.pipe()
         try:
@@ -118,7 +121,7 @@ class AplayOutput(AudioOutput):
             os.close(w_fd)
         try:
             aplay = await asyncio.create_subprocess_exec(
-                APLAY_BIN, "-D", APLAY_DEVICE,
+                APLAY_BIN, "-D", self._device,
                 "-r", "48000", "-c", "2", "-f", "S16_LE",
                 stdin=r_fd,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -134,7 +137,7 @@ class AplayOutput(AudioOutput):
 
     async def play_file(self, path: Path) -> None:
         proc = await asyncio.create_subprocess_exec(
-            APLAY_BIN, "-D", APLAY_DEVICE, str(path),
+            APLAY_BIN, "-D", self._device, str(path),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -142,7 +145,7 @@ class AplayOutput(AudioOutput):
 
     def play_file_sync(self, path: Path) -> None:
         subprocess.run(
-            [APLAY_BIN, "-D", APLAY_DEVICE, str(path)],
+            [APLAY_BIN, "-D", self._device, str(path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
