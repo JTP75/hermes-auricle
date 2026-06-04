@@ -82,9 +82,22 @@ class WhisperSTTProvider(STTProvider):
         self._python_path = python_path
         self._worker_path = worker_path
         self._proc: Optional[subprocess.Popen] = None
+        self._loading: bool = False
 
     def load(self) -> None:
-        # Terminate any previously running worker before spawning a new one.
+        # If a worker is already mid-load (gateway timed out and retried), wait
+        # for it rather than killing it — killing aborts the HF model download
+        # and corrupts the cache.
+        if self._loading and self._proc and self._proc.poll() is None:
+            line = self._proc.stdout.readline()
+            if line and line.strip() == b"READY":
+                self._loading = False
+                return
+            # Worker died during loading; fall through to spawn a fresh one.
+            self._proc = None
+            self._loading = False
+
+        # Kill any previously loaded (non-loading) worker before replacing it.
         if self._proc and self._proc.poll() is None:
             try:
                 self._proc.stdin.write(b"\x03")
@@ -94,6 +107,7 @@ class WhisperSTTProvider(STTProvider):
             self._proc.terminate()
             self._proc = None
 
+        self._loading = True
         self._proc = subprocess.Popen(
             [self._python_path, self._worker_path, "--model-id", self._model_id],
             stdin=subprocess.PIPE,
@@ -101,8 +115,10 @@ class WhisperSTTProvider(STTProvider):
             stderr=None,  # inherited — worker logs appear in hermes stderr
         )
         line = self._proc.stdout.readline()
+        self._loading = False
         if not line or line.strip() != b"READY":
-            self._proc.kill()
+            if self._proc is not None:
+                self._proc.kill()
             self._proc = None
             raise RuntimeError(
                 f"whisper_worker failed to start (got {line!r}). "
