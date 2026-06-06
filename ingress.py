@@ -123,6 +123,9 @@ def run_ingress_loop(
                 active_listen_deadline = None
                 continue
 
+            # Keep OWW context warm so barge-in works immediately when SPEAKING starts
+            oww.predict(np.frombuffer(data, dtype=np.int16))
+
             if audio_buffer.tts_active:
                 final, partial = None, None
             else:
