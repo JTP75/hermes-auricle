@@ -86,7 +86,7 @@ def run_ingress_loop(
                 logger.info("[auricle] wakeword detected (p=%.2f) → AWAITING_UTTERANCE", prob)
                 oww.reset()
                 stt_provider.reset()
-                audio_output.play_file_sync(ASSET_WAKEUP)
+                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(audio_output.play_file(ASSET_WAKEUP)))
                 fsm.transition(State.AWAITING_UTTERANCE)
                 active_listen_deadline = None  # armed on first chunk in new state
 
@@ -148,7 +148,7 @@ def run_ingress_loop(
                     else:
                         logger.info("[auricle] misinput %d/%d → AWAITING_UTTERANCE",
                                     consecutive_misinputs, MISINPUT_MAX_CONSECUTIVE)
-                        audio_output.play_file_sync(ASSET_CONFUSED)
+                        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(audio_output.play_file(ASSET_CONFUSED)))
                         fsm.transition(State.AWAITING_UTTERANCE)
                 else:
                     consecutive_misinputs = 0
