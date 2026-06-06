@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import subprocess
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -151,17 +152,28 @@ class AplayOutput(AudioOutput):
         )
 
 
-# ── Concrete: sounddevice (Windows / cross-platform) ──────────────────────
+# ── Concrete: sounddevice (cross-platform) ────────────────────────────────
 
 class SounddevicePlaybackHandle(PlaybackHandle):
+    def __init__(self, stream, done: threading.Event) -> None:
+        self._stream = stream
+        self._done   = done
+
     async def wait(self) -> None:
-        import sounddevice as sd
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, sd.wait)
+        await loop.run_in_executor(None, self._done.wait)
+        try:
+            self._stream.close()
+        except Exception:
+            pass
 
     def kill(self) -> None:
-        import sounddevice as sd
-        sd.stop()
+        try:
+            self._stream.abort()
+            self._stream.close()
+        except Exception:
+            pass
+        self._done.set()
 
 
 class SounddeviceInput(AudioInput):
@@ -199,22 +211,47 @@ class SounddeviceOutput(AudioOutput):
     def __init__(self, device=None) -> None:
         self._device = device
 
+    def _stream_array(self, arr, samplerate: int):
+        import sounddevice as sd
+        data = arr.reshape(-1, 1) if arr.ndim == 1 else arr
+        pos  = [0]
+        done = threading.Event()
+
+        def callback(outdata, frames, time, status):
+            remaining = len(data) - pos[0]
+            if remaining <= 0:
+                raise sd.CallbackStop()
+            n = min(frames, remaining)
+            outdata[:n] = data[pos[0]:pos[0] + n]
+            if n < frames:
+                outdata[n:] = 0
+            pos[0] += n
+
+        stream = sd.OutputStream(
+            samplerate=samplerate,
+            channels=data.shape[1],
+            dtype="int16",
+            device=self._device,
+            callback=callback,
+            finished_callback=done.set,
+        )
+        return stream, done
+
     async def play_bytes(self, audio_bytes: bytes) -> PlaybackHandle:
         import numpy as np
-        import sounddevice as sd
         proc = await asyncio.create_subprocess_exec(
             FFMPEG_BIN, "-hide_banner", "-loglevel", "quiet",
             "-i", "pipe:0",
-            "-f", "s16le", "-ar", "48000", "-ac", "1",
-            "pipe:1",
+            "-f", "s16le", "-ar", "48000", "-ac", "1", "pipe:1",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
         pcm_bytes, _ = await proc.communicate(audio_bytes)
         arr = np.frombuffer(pcm_bytes, dtype=np.int16)
-        sd.play(arr, samplerate=48000, device=self._device)
-        return SounddevicePlaybackHandle()
+        stream, done = self._stream_array(arr, 48000)
+        stream.start()
+        return SounddevicePlaybackHandle(stream, done)
 
     async def play_file(self, path: Path) -> None:
         loop = asyncio.get_running_loop()
@@ -226,12 +263,14 @@ class SounddeviceOutput(AudioOutput):
     def _play_wav_sync(self, path: Path) -> None:
         import wave
         import numpy as np
-        import sounddevice as sd
         with wave.open(str(path), "rb") as wf:
+            rate   = wf.getframerate()
+            n_ch   = wf.getnchannels()
             frames = wf.readframes(wf.getnframes())
-            arr = np.frombuffer(frames, dtype=np.int16)
-            n_ch = wf.getnchannels()
-            if n_ch > 1:
-                arr = arr.reshape(-1, n_ch)
-            sd.play(arr, samplerate=wf.getframerate(), device=self._device)
-            sd.wait()
+        arr = np.frombuffer(frames, dtype=np.int16)
+        if n_ch > 1:
+            arr = arr.reshape(-1, n_ch)
+        stream, done = self._stream_array(arr, rate)
+        stream.start()
+        done.wait()
+        stream.close()
