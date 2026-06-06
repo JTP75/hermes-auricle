@@ -414,7 +414,7 @@ def _check_mic_sounddevice(issues: list[str]) -> None:
         return
 
     device = _sd_device(ENV_SD_INPUT_DEVICE, DEFAULT_SD_INPUT_DEVICE)
-    _info(f"sounddevice input device: {device!r if device is not None else 'system default'}")
+    _info(f"sounddevice input device: {repr(device) if device is not None else 'system default'}")
 
     try:
         recording = sd.rec(
@@ -439,7 +439,7 @@ def _check_speaker_sounddevice(issues: list[str]) -> None:
         return
 
     device = _sd_device(ENV_SD_OUTPUT_DEVICE, DEFAULT_SD_OUTPUT_DEVICE)
-    _info(f"sounddevice output device: {device!r if device is not None else 'system default'}")
+    _info(f"sounddevice output device: {repr(device) if device is not None else 'system default'}")
 
     try:
         with wave.open(str(ASSET_NOTIFY), "rb") as wf:

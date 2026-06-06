@@ -58,11 +58,11 @@ sudo apt install alsa-utils ffmpeg
    hermes gateway start
    ```
 
-5. Verify your setup with the doctor script:
+5. Verify your setup with the doctor script (run from the plugin directory, using the same Python as hermes):
    ```bash
-   python ~/.hermes/plugins/hermes-auricle/doctor.py
+   python doctor.py
    ```
-   This checks Python deps, model files, system binaries, and exercises both audio devices (mic capture + speaker playback).
+   This checks Python deps, model files, system binaries, and exercises both audio devices (mic capture + speaker playback). Stop the hermes gateway first — the audio device tests need exclusive ALSA access.
 
 ---
 
