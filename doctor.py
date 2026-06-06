@@ -84,6 +84,36 @@ def _sec(title: str) -> None:
     print(_c(f"◆ {title}", _C, _B))
 
 
+# ── gateway detection ────────────────────────────────────────────────────────
+
+def _gateway_is_running() -> bool:
+    """Return True if the hermes gateway process is alive.
+
+    Reads $HERMES_HOME/gateway.pid (JSON dict with 'pid' key, or bare int)
+    and probes the PID with kill(pid, 0) — no hermes imports needed.
+    """
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    pid_path = hermes_home / "gateway.pid"
+    if not pid_path.exists():
+        return False
+    try:
+        import json as _json
+        raw = pid_path.read_text().strip()
+        payload = _json.loads(raw)
+        pid = int(payload["pid"] if isinstance(payload, dict) else payload)
+    except Exception:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # process exists, we just can't signal it
+    except OSError:
+        return False
+
+
 # ── .env loading ──────────────────────────────────────────────────────────────
 
 def _load_env() -> tuple[Path | None, str]:
@@ -340,6 +370,12 @@ def _check_audio_devices(
     binaries_ok: dict[str, bool],
 ) -> None:
     _sec("Audio Devices")
+
+    if _gateway_is_running():
+        _warn(
+            "Hermes gateway is running",
+            "audio device tests may fail with EBUSY — stop the gateway for accurate results",
+        )
 
     if audio_in == "arecord":
         if not binaries_ok.get("arecord", False):
