@@ -114,6 +114,9 @@ DEFAULT_SLEEP_WAKE_SENSITIVITY = 3.0     # × sleep_baseline → wake threshold
 DEFAULT_SLEEP_FLUX_THRESHOLD   = 0.02    # normalized flux EMA "quiet" cutoff
 SLEEP_EMA_ALPHA                = 0.01    # ~4-second smoothing at 40ms/chunk
 
+# ── Doctor (doctor.py only) ────────────────────────────────────────────────
+DOCTOR_MIC_SILENCE_THRESHOLD = 500  # int16 peak below which mic is warned as silent/muted
+
 # ── Timing ─────────────────────────────────────────────────────────────────
 RETRY_DELAY_SECONDS        = 30
 PROACTIVE_PRE_SPEECH_PAUSE = 1.0   # seconds of silence after notify before TTS
