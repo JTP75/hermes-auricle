@@ -16,6 +16,7 @@ detection, speech-to-text (STT), and text-to-speech (TTS) capabilities.
 | [`docs/rev1/plugin-system-research.md`](docs/rev1/plugin-system-research.md) | Notes on how the hermes platform plugin system works (entry points, registration, config wiring) — written during initial integration |
 | [`docs/rev1/setup-log-rev1.md`](docs/rev1/setup-log-rev1.md) | Installation and integration log for rev1 on the Pi (dependency alignment, venv setup) |
 | [`docs/rev0/blueprint-salvage.md`](docs/rev0/blueprint-salvage.md) | Usable patterns extracted from the original rev0 blueprints; stale pieces dropped; superseded by `design-rev1.md` |
+| [`doctor.py`](doctor.py) | Standalone diagnostic script — checks Python deps, system binaries, model files, whisper shim (if configured), and audio devices (live mic capture + speaker playback via `ASSET_NOTIFY`). Must be run with the hermes venv Python and with the gateway stopped. Intended as a setup verifier and future CI gate. |
 
 ## Required behavior for agents 
 
@@ -116,6 +117,16 @@ No period at the end. No body unless the user asks for one.
 New features additions must be documented with at least one line in `README.md`.
 Patches and bug fixes should only be documented if they contradict what is in `README.md`.
 The amount of documentation for an addition should reflect the scale code change.
+
+### Rule 5 — Keep `doctor.py` in sync with the runtime
+
+When adding any of the following, add the corresponding check to `doctor.py`:
+- A new Python dependency (import check in section C)
+- A new model file or asset path (file-existence check in section E)
+- A new required system binary (section D)
+- A new env var that controls the audio device path or STT/TTS backend (section B or G)
+
+Constants used only by the doctor must use the `DOCTOR_` prefix and a `# ── Doctor (doctor.py only)` category comment in `consts.py`. They do **not** need a `plugin.yaml` entry — they are not runtime config and are never read from the environment.
 
 ## Known Gotchas
 
