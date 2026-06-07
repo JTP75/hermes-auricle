@@ -2,6 +2,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from abc import ABC, abstractmethod
 from typing import AsyncIterator, Optional, Tuple
 
@@ -84,6 +85,7 @@ class WhisperSTTProvider(STTProvider):
         self._worker_path = worker_path
         self._proc: Optional[subprocess.Popen] = None
         self._loading: bool = False
+        self._stderr_thread: Optional[threading.Thread] = None
 
     def load(self) -> None:
         # If a worker is already mid-load (gateway timed out and retried), wait
@@ -113,9 +115,10 @@ class WhisperSTTProvider(STTProvider):
             [self._python_path, self._worker_path, "--model-id", self._model_id],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL if sys.platform == "win32" else None,
+            stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
+        self._start_stderr_forwarder()
         line = self._proc.stdout.readline()
         self._loading = False
         if not line or line.strip() != b"READY":
@@ -126,6 +129,17 @@ class WhisperSTTProvider(STTProvider):
                 f"whisper_worker failed to start (got {line!r}). "
                 "Check AURICLE_WHISPER_PYTHON and its installed dependencies."
             )
+
+    def _start_stderr_forwarder(self) -> None:
+        proc = self._proc
+        def _drain():
+            for raw in proc.stderr:
+                msg = raw.decode("utf-8", errors="replace").rstrip()
+                if msg:
+                    logger.debug("[auricle/whisper_worker] %s", msg)
+        t = threading.Thread(target=_drain, daemon=True)
+        t.start()
+        self._stderr_thread = t
 
     def feed(self, pcm_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
         if self._proc is None or self._proc.poll() is not None:

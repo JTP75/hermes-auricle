@@ -360,13 +360,13 @@ def _check_whisper_shim(issues: list[str]) -> None:
 
     # Probe that subprocess pipe creation works with the same config as the real worker.
     # Catches OS-level Popen failures (e.g. ConPTY stderr inheritance on Windows).
-    _stderr = subprocess.DEVNULL if sys.platform == "win32" else None
     try:
         probe = subprocess.Popen(
             [python_path, "-c", "import sys; sys.stdout.write('ok\\n'); sys.stdout.flush()"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=_stderr,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         out, _ = probe.communicate(timeout=5)
         if out.strip() == b"ok":
