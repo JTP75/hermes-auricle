@@ -174,14 +174,36 @@ def _feed(pcm_bytes: bytes, state: dict, pipe, vad) -> str:
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
+def _smoke(pipe) -> None:
+    """Run a single inference pass on synthetic audio and report device + timing."""
+    import time
+    import numpy as np
+
+    _err("[whisper_worker] smoke: generating 3s of test audio")
+    rng   = np.random.default_rng(42)
+    audio = rng.integers(-500, 500, size=SAMPLE_RATE * 3, dtype=np.int16).astype(np.float32) / 32768.0
+
+    _err("[whisper_worker] smoke: running inference...")
+    t0     = time.monotonic()
+    result = pipe({"array": audio, "sampling_rate": SAMPLE_RATE}, generate_kwargs={"language": "english"})
+    elapsed = time.monotonic() - t0
+
+    _err(f"[whisper_worker] smoke OK: {elapsed:.3f}s  transcript={result['text']!r}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-id", required=True, help="HuggingFace model ID")
+    parser.add_argument("--smoke", action="store_true", help="Run inference smoke test and exit")
     args = parser.parse_args()
 
     pipe, vad = _load_pipeline(args.model_id)
-    state     = _make_state()
 
+    if args.smoke:
+        _smoke(pipe)
+        return
+
+    state = _make_state()
     _out("READY")
 
     stdin = sys.stdin.buffer
