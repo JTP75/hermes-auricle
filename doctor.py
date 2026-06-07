@@ -358,6 +358,26 @@ def _check_whisper_shim(issues: list[str]) -> None:
         except Exception as e:
             _fail(f"Whisper venv: {pkg}", str(e), issues)
 
+    # Probe that subprocess pipe creation works with the same config as the real worker.
+    # Catches OS-level Popen failures (e.g. ConPTY stderr inheritance on Windows).
+    _stderr = subprocess.DEVNULL if sys.platform == "win32" else None
+    try:
+        probe = subprocess.Popen(
+            [python_path, "-c", "import sys; sys.stdout.write('ok\\n'); sys.stdout.flush()"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=_stderr,
+        )
+        out, _ = probe.communicate(timeout=5)
+        if out.strip() == b"ok":
+            _ok("Whisper subprocess pipe probe")
+        else:
+            _fail("Whisper subprocess pipe probe", f"unexpected output: {out!r}", issues)
+    except subprocess.TimeoutExpired:
+        _fail("Whisper subprocess pipe probe", "timed out", issues)
+    except Exception as e:
+        _fail("Whisper subprocess pipe probe", str(e), issues)
+
 
 # ── section G: audio devices ──────────────────────────────────────────────────
 

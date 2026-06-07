@@ -1,6 +1,7 @@
 import json
 import re
 import subprocess
+import sys
 from abc import ABC, abstractmethod
 from typing import AsyncIterator, Optional, Tuple
 
@@ -112,7 +113,7 @@ class WhisperSTTProvider(STTProvider):
             [self._python_path, self._worker_path, "--model-id", self._model_id],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=None,  # inherited — worker logs appear in hermes stderr
+            stderr=subprocess.DEVNULL if sys.platform == "win32" else None,
         )
         line = self._proc.stdout.readline()
         self._loading = False
