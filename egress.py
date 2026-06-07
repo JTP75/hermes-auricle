@@ -60,18 +60,16 @@ class EgressController:
         self._audio_buffer.set_tts_active(False)
         self.kill_active()
         
-        # Drain queue and mark tasks done to unlock any pending queue joins
+        # Drain remaining queue items so queue.join() can unblock.
+        # Do NOT cancel the worker task — cancellation races with play_bytes()
+        # creating subprocesses and leaves them alive. The barge_in event
+        # drives the worker to exit cooperatively at its next check point.
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
                 self._queue.task_done()
             except (asyncio.QueueEmpty, ValueError):
                 break
-        
-        # Cancel worker thread
-        if self._worker_task and not self._worker_task.done():
-            self._worker_task.cancel()
-            self._worker_task = None
 
     def start_worker(self) -> None:
         self._worker_task = asyncio.create_task(self._worker())
@@ -175,6 +173,15 @@ class EgressController:
                 if not audio:
                     audio = await self._fetch_audio(sentence)
                 handle = await self._audio_output.play_bytes(audio)
+
+                # Guard: abort() may have fired while play_bytes was awaiting.
+                # _active_handle wasn't set yet, so kill_active() was a no-op.
+                # Kill the just-created handle before it plays anything.
+                if self._barge_in.is_set():
+                    handle.kill()
+                    self._queue.task_done()
+                    self._drain()
+                    break
 
                 self._active_handle = handle
                 self._audio_buffer.set_tts_active(True)
