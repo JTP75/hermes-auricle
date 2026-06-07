@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -246,6 +247,7 @@ class SounddeviceOutput(AudioOutput):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         pcm_bytes, _ = await proc.communicate(audio_bytes)
         arr = np.frombuffer(pcm_bytes, dtype=np.int16)

@@ -114,6 +114,7 @@ class WhisperSTTProvider(STTProvider):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL if sys.platform == "win32" else None,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         line = self._proc.stdout.readline()
         self._loading = False
