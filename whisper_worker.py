@@ -87,8 +87,9 @@ def _load_pipeline(model_id: str):
         device=device,
     )
     vad = webrtcvad.Vad(WHISPER_VAD_AGGRESSIVENESS)
-    _err("[whisper_worker] ready")
-    return pipe, vad
+    is_multilingual = getattr(model.config, "is_multilingual", False)
+    _err(f"[whisper_worker] ready (multilingual={is_multilingual})")
+    return pipe, vad, is_multilingual
 
 
 # ── VAD state ─────────────────────────────────────────────────────────────────
@@ -114,7 +115,7 @@ def _reset_state(state: dict) -> None:
 
 # ── Feed logic (lifted verbatim from WhisperSTTProvider.feed) ─────────────────
 
-def _feed(pcm_bytes: bytes, state: dict, pipe, vad) -> str:
+def _feed(pcm_bytes: bytes, state: dict, pipe, vad, is_multilingual: bool) -> str:
     import numpy as np
 
     # Re-slice incoming 1280-byte OWW chunk into 960-byte VAD frames.
@@ -154,9 +155,10 @@ def _feed(pcm_bytes: bytes, state: dict, pipe, vad) -> str:
                 if len(state["voiced_frames"]) >= WHISPER_MIN_SPEECH_FRAMES:
                     audio_np  = np.frombuffer(b"".join(state["voiced_frames"]), dtype=np.int16)
                     audio_f32 = audio_np.astype(np.float32) / 32768.0
+                    gen_kw    = {"language": "english"} if is_multilingual else {}
                     result    = pipe(
                         {"array": audio_f32, "sampling_rate": SAMPLE_RATE},
-                        generate_kwargs={"language": "english"},
+                        **({"generate_kwargs": gen_kw} if gen_kw else {}),
                     )
                     text = result["text"].strip()
                     if text:
@@ -174,7 +176,7 @@ def _feed(pcm_bytes: bytes, state: dict, pipe, vad) -> str:
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
-def _smoke(pipe) -> None:
+def _smoke(pipe, is_multilingual: bool) -> None:
     """Run a single inference pass on synthetic audio and report device + timing."""
     import time
     import numpy as np
@@ -183,9 +185,13 @@ def _smoke(pipe) -> None:
     rng   = np.random.default_rng(42)
     audio = rng.integers(-500, 500, size=SAMPLE_RATE * 3, dtype=np.int16).astype(np.float32) / 32768.0
 
+    gen_kw = {"language": "english"} if is_multilingual else {}
     _err("[whisper_worker] smoke: running inference...")
-    t0     = time.monotonic()
-    result = pipe({"array": audio, "sampling_rate": SAMPLE_RATE}, generate_kwargs={"language": "english"})
+    t0      = time.monotonic()
+    result  = pipe(
+        {"array": audio, "sampling_rate": SAMPLE_RATE},
+        **({"generate_kwargs": gen_kw} if gen_kw else {}),
+    )
     elapsed = time.monotonic() - t0
 
     _err(f"[whisper_worker] smoke OK: {elapsed:.3f}s  transcript={result['text']!r}")
@@ -197,10 +203,10 @@ def main() -> None:
     parser.add_argument("--smoke", action="store_true", help="Run inference smoke test and exit")
     args = parser.parse_args()
 
-    pipe, vad = _load_pipeline(args.model_id)
+    pipe, vad, is_multilingual = _load_pipeline(args.model_id)
 
     if args.smoke:
-        _smoke(pipe)
+        _smoke(pipe, is_multilingual)
         return
 
     state = _make_state()
@@ -217,7 +223,7 @@ def main() -> None:
             pcm = _read_exact(stdin, AUDIO_CHUNK_BYTES)
             if len(pcm) < AUDIO_CHUNK_BYTES:
                 break              # truncated read = EOF
-            _out(_feed(pcm, state, pipe, vad))
+            _out(_feed(pcm, state, pipe, vad, is_multilingual))
 
         elif cmd == 0x02:
             _reset_state(state)
