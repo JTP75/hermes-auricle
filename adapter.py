@@ -26,6 +26,7 @@ from .consts import (
     TTS_CLEARED,
     TTS_STOPPED,
     TTS_ERROR,
+    TTS_MAX_CHARS,
     CHAT_ID,
     DEFAULT_ACTIVE_LISTEN_DURATION,
     DEFAULT_MIC_DEVICE,
@@ -615,7 +616,7 @@ async def _standalone_send(
     """Out-of-process delivery for cron/notification jobs."""
     import re
     voice = os.getenv(ENV_TTS_VOICE, DEFAULT_TTS_VOICE)
-    clean = re.sub(r'[*_`#\[\]()]', "", message)[:4000].strip()
+    clean = re.sub(r'[*_`#\[\]()]', "", message)[:TTS_MAX_CHARS].strip()
     if not clean:
         return {"success": True}
     try:

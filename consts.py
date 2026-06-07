@@ -12,9 +12,10 @@ ASSET_NOTIFY   = ASSETS_DIR / "auricle-notify.wav"
 ASSET_CONFUSED = ASSETS_DIR / "auricle-confused.wav"
 ALL_ASSETS: Tuple[Path, ...] = (ASSET_WAKEUP, ASSET_TOSLEEP, ASSET_NOTIFY, ASSET_CONFUSED)
 
-TTS_CLEARED = "Session cleared."
-TTS_STOPPED = "Run stopped."
-TTS_ERROR   = "Something went wrong."
+TTS_CLEARED   = "Session cleared."
+TTS_STOPPED   = "Run stopped."
+TTS_ERROR     = "Something went wrong."
+TTS_MAX_CHARS = 3000  # hard cap on characters spoken per response (both egress paths)
 
 # ── Misinput guard ─────────────────────────────────────────────────────────
 MISINPUT_MAX_CONSECUTIVE = 2
@@ -142,8 +143,8 @@ _CMD_STOP  = "__AURICLE_STOP__"
 PLATFORM_HINT = (
     "You are speaking through auricle, the local voice interface for hermes. You respond aloud — "
     "keep everything short and conversational. Never use markdown, code fences, "
-    "bullet lists, headers, emojis, or URLs. Do not narrate tools you use; give the user "
-    "a direct, natural-language answer. Prefer one to three sentences. This channelt is "
+    "bullet lists, headers, emojis, or URLs. Do not narrate tools you use and do not think "
+    "out loud; give the user a direct, natural-language answer. Prefer one to three sentences. This channelt is "
     "NOT capable of approving sensitive tools; any attempts will be auto declined. Also, "
     "Try to keep responses timely; avoid runaway tool loops."
     ""

@@ -6,6 +6,7 @@ from typing import Optional
 
 from .audio_buffer import AudioBuffer
 from .audio_io import AudioOutput, PlaybackHandle
+from .consts import TTS_MAX_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class EgressController:
 
         self._processed_len: int                    = 0
         self._text_buffer:   str                    = ""
+        self._spoken_chars:  int                    = 0
         self._queue:         asyncio.Queue          = asyncio.Queue()
         self._active_handle: Optional[PlaybackHandle] = None
         self._worker_task:   Optional[asyncio.Task] = None
@@ -47,6 +49,7 @@ class EgressController:
     def reset(self) -> None:
         self._processed_len = 0
         self._text_buffer   = ""
+        self._spoken_chars  = 0
         self._queue         = asyncio.Queue()
         self._active_handle = None
         self._worker_task   = None
@@ -95,6 +98,9 @@ class EgressController:
             completed = []
 
         for sentence in completed:
+            if self._spoken_chars >= TTS_MAX_CHARS:
+                break
+            self._spoken_chars += len(sentence)
             await self._queue.put(sentence)
 
         if finalize:
