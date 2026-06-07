@@ -380,6 +380,7 @@ class AuricleAdapter(BasePlatformAdapter):
 
         proactive = self._fsm.is_idle_for_proactive()
 
+        self._egress.abort()
         self._egress.reset()
         self._egress.start_worker()
 

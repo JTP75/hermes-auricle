@@ -45,6 +45,7 @@ class EgressController:
         self._queue:         asyncio.Queue          = asyncio.Queue()
         self._active_handle: Optional[PlaybackHandle] = None
         self._worker_task:   Optional[asyncio.Task] = None
+        self._generation:    int                    = 0
 
     def reset(self) -> None:
         self._processed_len = 0
@@ -62,11 +63,11 @@ class EgressController:
         self._barge_in.set()
         self._audio_buffer.set_tts_active(False)
         self.kill_active()
-        
+
         # Drain remaining queue items so queue.join() can unblock.
         # Do NOT cancel the worker task — cancellation races with play_bytes()
-        # creating subprocesses and leaves them alive. The barge_in event
-        # drives the worker to exit cooperatively at its next check point.
+        # creating subprocesses and leaves them alive. The barge_in event and
+        # generation check drive the worker to exit cooperatively.
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -75,7 +76,10 @@ class EgressController:
                 break
 
     def start_worker(self) -> None:
-        self._worker_task = asyncio.create_task(self._worker())
+        self._generation += 1
+        self._worker_task = asyncio.create_task(
+            self._worker(self._queue, self._generation)
+        )
 
     async def process_delta(self, cumulative_text: str, *, finalize: bool) -> None:
         if self._barge_in.is_set():
@@ -142,18 +146,24 @@ class EgressController:
             handle = await self._audio_output.play_bytes(audio)
             await handle.wait()
 
-    async def _worker(self) -> None:
-        # lookahead: a sentence already dequeued (and its audio prefetched) but not yet played.
-        # _NO_LOOKAHEAD = nothing pending; None = the end-of-turn sentinel was peeked.
+    async def _worker(self, queue: asyncio.Queue, my_gen: int) -> None:
+        # Each worker captures its queue and generation at spawn time.
+        # _stale() returns True when barge-in fires OR a newer send() has
+        # incremented the generation, making this worker's turn obsolete.
+        # Using local captures means reset() can safely replace self._queue
+        # and self._generation without corrupting a running worker.
         lookahead = _NO_LOOKAHEAD
         prefetch_bytes: Optional[bytes] = None
 
+        def _stale() -> bool:
+            return self._barge_in.is_set() or self._generation != my_gen
+
         while True:
-            # ── barge-in ──────────────────────────────────────────────────
-            if self._barge_in.is_set():
+            # ── barge-in / preemption ──────────────────────────────────────
+            if _stale():
                 if lookahead is not _NO_LOOKAHEAD:
-                    self._queue.task_done()
-                self._drain()
+                    queue.task_done()
+                self._drain(queue)
                 break
 
             # ── get sentence (from lookahead or queue) ────────────────────
@@ -161,16 +171,16 @@ class EgressController:
                 sentence, audio = lookahead, prefetch_bytes
                 lookahead, prefetch_bytes = _NO_LOOKAHEAD, None
             else:
-                sentence = await self._queue.get()
+                sentence = await queue.get()
                 audio = None
 
-            if self._barge_in.is_set():
-                self._queue.task_done()
-                self._drain()
+            if _stale():
+                queue.task_done()
+                self._drain(queue)
                 break
 
             if sentence is None:
-                self._queue.task_done()
+                queue.task_done()
                 logger.info("[auricle] TTS turn complete")
                 break
 
@@ -180,20 +190,20 @@ class EgressController:
                     audio = await self._fetch_audio(sentence)
                 handle = await self._audio_output.play_bytes(audio)
 
-                # Guard: abort() may have fired while play_bytes was awaiting.
-                # _active_handle wasn't set yet, so kill_active() was a no-op.
-                # Kill the just-created handle before it plays anything.
-                if self._barge_in.is_set():
+                # Guard: abort()/preemption may have fired while play_bytes was
+                # awaiting (e.g. sounddevice's proc.communicate() transcode).
+                # _active_handle wasn't set yet so kill_active() was a no-op;
+                # the generation check catches it here regardless of barge_in state.
+                if _stale():
                     handle.kill()
-                    self._queue.task_done()
-                    self._drain()
+                    self._drain(queue)
                     break
 
                 self._active_handle = handle
                 self._audio_buffer.set_tts_active(True)
 
                 play_task     = asyncio.create_task(handle.wait())
-                get_next_task = asyncio.create_task(self._queue.get())
+                get_next_task = asyncio.create_task(queue.get())
 
                 done, _ = await asyncio.wait(
                     [play_task, get_next_task], return_when=asyncio.FIRST_COMPLETED
@@ -202,7 +212,7 @@ class EgressController:
                 if get_next_task in done:
                     next_item = get_next_task.result()
                     lookahead = next_item
-                    if next_item is not None and not self._barge_in.is_set():
+                    if next_item is not None and not _stale():
                         # Prefetch next sentence's audio concurrently with current playback
                         fetched, _ = await asyncio.gather(
                             self._fetch_audio(next_item),
@@ -223,12 +233,13 @@ class EgressController:
             finally:
                 self._audio_buffer.set_tts_active(False)
                 self._active_handle = None
-                self._queue.task_done()
+                queue.task_done()
 
-    def _drain(self) -> None:
-        while not self._queue.empty():
+    def _drain(self, queue: Optional[asyncio.Queue] = None) -> None:
+        q = queue if queue is not None else self._queue
+        while not q.empty():
             try:
-                self._queue.get_nowait()
-                self._queue.task_done()
+                q.get_nowait()
+                q.task_done()
             except asyncio.QueueEmpty:
                 break
