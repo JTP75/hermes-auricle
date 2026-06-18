@@ -3,7 +3,7 @@
 A local voice platform plugin for [hermes](https://github.com/nousresearch/hermes-agent). Turns a Raspberry Pi + Jabra Speak 510 USB into an Alexa-style smart speaker. STT is fully offline (vosk); TTS uses Edge-TTS and requires an internet connection.
 
 - **Wakeword + STT**: [openWakeWord](https://github.com/dscripka/openWakeWord) (neural detector) + pluggable STT backend: [vosk](https://alphacephei.com/vosk/) (offline, CPU) or [distil-whisper](https://huggingface.co/distil-whisper/distil-large-v3) (GPU-accelerated via HuggingFace transformers)
-- **TTS + playback**: [edge-tts](https://github.com/rany2/edge-tts) piped to `aplay` via `ffmpeg`
+- **TTS + playback**: pluggable TTS backend — [edge-tts](https://github.com/rany2/edge-tts) (default, cloud) or [F5-TTS](https://github.com/SWivid/F5-TTS) (local GPU, voice cloning) — piped to `aplay` via `ffmpeg`
 - **Target hardware**: Raspberry Pi + Jabra Speak 510 USB (mic + speaker in one device, hardware echo cancellation)
 
 ---
@@ -22,6 +22,13 @@ python3.10 -m venv /path/to/whisper-venv
 # 2. Install the audio pipeline deps in the hermes venv as usual
 pip install openwakeword numpy edge-tts
 # 3. Point AURICLE_WHISPER_PYTHON at the 3.10 venv python
+
+# f5-tts backend (requires CUDA GPU + a separate Python 3.10 venv with f5_tts installed)
+# 1. Create a Python 3.10 venv and install f5-tts inside it
+python3.10 -m venv ~/f5-venv
+~/f5-venv/bin/pip install f5-tts torch torchaudio
+# 2. Set AURICLE_TTS_BACKEND=f5-tts and AURICLE_F5_PYTHON=~/f5-venv/bin/python
+# 3. Optionally set AURICLE_F5_REF_WAV and AURICLE_F5_REF_TXT for voice cloning
 ```
 
 **System packages** (Debian/Ubuntu)
@@ -89,6 +96,13 @@ All settings live under a top-level `auricle:` key in `~/.hermes/config.yaml`. E
 | `sleep_flux_threshold` | `AURICLE_SLEEP_FLUX_THRESHOLD` | `0.02` | Normalized flux EMA cutoff for "quiet" classification |
 | `session_auto_clear` | `AURICLE_SESSION_AUTO_CLEAR` | `true` | Clear session history after a period of inactivity |
 | `session_clear_after` | `AURICLE_SESSION_CLEAR_AFTER` | `3600` | Seconds of inactivity before session history is cleared |
+| `tts_backend` | `AURICLE_TTS_BACKEND` | `edge-tts` | TTS backend: `edge-tts` or `f5-tts` |
+| `f5_python` | `AURICLE_F5_PYTHON` | *(required)* | Path to the Python binary in the f5-tts venv (f5-tts backend only) |
+| `f5_model` | `AURICLE_F5_MODEL` | `F5TTS_v1_Base` | F5-TTS model name (f5-tts backend only) |
+| `f5_steps` | `AURICLE_F5_STEPS` | `5` | Flow-matching inference steps; lower = faster (f5-tts backend only) |
+| `f5_speed` | `AURICLE_F5_SPEED` | `1.0` | Speech speed multiplier (f5-tts backend only) |
+| `f5_ref_wav` | `AURICLE_F5_REF_WAV` | *(optional)* | Path to reference WAV for voice cloning — 5–15s, 24 kHz mono (f5-tts backend only) |
+| `f5_ref_txt` | `AURICLE_F5_REF_TXT` | *(optional)* | Path to exact transcript of `F5_REF_WAV`. Both must be set to enable cloning; omit both for the bundled default voice. (f5-tts backend only) |
 
 Example `config.yaml` block:
 ```yaml
@@ -118,7 +132,9 @@ These are matched against the full vosk transcript (exact, case-insensitive). **
 
 **Ingress:** A single `arecord` subprocess feeds raw 16kHz PCM through a state-gated pipeline. In IDLE, OWW watches for the wakeword. In SPEAKING and DISPATCHED, OWW also runs for barge-in detection. In AWAITING_UTTERANCE and UTTERANCE, the STT backend captures the utterance. OWW and STT never run on the same chunk simultaneously — which state the FSM is in determines which model processes each chunk. After the utterance ends, the transcript is dispatched to the hermes agent. When using the whisper backend, STT inference runs in a separate Python 3.10 subprocess (`whisper_worker.py`) so that GPU-only torch wheels for platforms like the Jetson Orin Nano are not constrained by the hermes venv's Python version.
 
-**Egress:** The full agent response arrives in one `send()` call and is segmented internally by newlines into units. Each unit is synthesized via the `edge_tts` Python library and written to a `pw-play` stdin pipe. While the current unit plays, the next one is pre-fetched concurrently (lookahead). Barge-in (wakeword during TTS) kills playback immediately and opens a new listen window. TTS output is capped at 3000 characters per response across both the streaming and proactive delivery paths; playback stops at a sentence boundary once the cap is reached.
+**Egress:** The full agent response arrives in one `send()` call and is segmented internally by newlines into units. Each unit is synthesized by the active TTS backend and piped through `ffmpeg` to `aplay`. While the current unit plays, the next one is pre-fetched concurrently (lookahead). Barge-in (wakeword during TTS) kills playback immediately and opens a new listen window. TTS output is capped at 3000 characters per response across both the streaming and proactive delivery paths; playback stops at a sentence boundary once the cap is reached.
+
+**TTS backends:** `edge-tts` (default) streams MP3 from Microsoft's cloud and requires an internet connection. `f5-tts` runs entirely locally using [F5-TTS](https://github.com/SWivid/F5-TTS) (flow-matching, GPU) in a dedicated Python venv. F5 supports voice cloning: set `AURICLE_F5_REF_WAV` and `AURICLE_F5_REF_TXT` together (both or neither — setting only one is a misconfiguration and falls back to the bundled default voice with a warning). F5 synthesizes each segment completely before playback starts, so first-word latency is higher than edge-tts; at `AURICLE_F5_STEPS=5` this is typically under two seconds for short responses.
 
 **Active-listen window:** After TTS ends, the mic stays open for 5 seconds (configurable) without requiring the wakeword. This allows natural follow-up questions. The tosleep chime plays on expiry.
 
@@ -163,6 +179,8 @@ hermes-auricle/
   classifier.py        SystemMessageClassifier — suppresses hermes system messages
   audio_buffer.py      ring buffer with TTS-active tracking for echo suppression
   sleep.py             SleepDetector — spectral flux EMA for auto-sleep
+  whisper_worker.py    STT subprocess (Python 3.10 + torch/transformers/webrtcvad); whisper backend only
+  f5_worker.py         TTS subprocess (f5-tts venv + f5_tts/torch); f5-tts backend only
   assets/              auricle-wakeup / auricle-tosleep / auricle-notify / auricle-confused WAVs
   models/              model files (not committed)
 ```

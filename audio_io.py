@@ -132,9 +132,22 @@ class AplayOutput(AudioOutput):
             )
         finally:
             os.close(r_fd)
-        ffmpeg.stdin.write(audio_bytes)
-        await ffmpeg.stdin.drain()
-        ffmpeg.stdin.close()
+        # Feed stdin asynchronously.  A synchronous drain() deadlocks here
+        # when audio_bytes is large (e.g. a full F5-TTS WAV): ffmpeg decodes
+        # at ~100× realtime, fills the 64 KB stdout→aplay pipe before ALSA
+        # initialises on aplay's side, which blocks ffmpeg from reading stdin.
+        async def _feed():
+            try:
+                ffmpeg.stdin.write(audio_bytes)
+                await ffmpeg.stdin.drain()
+            except Exception:
+                pass
+            finally:
+                try:
+                    ffmpeg.stdin.close()
+                except Exception:
+                    pass
+        asyncio.create_task(_feed())
         return AplayPlaybackHandle(ffmpeg, aplay)
 
     async def play_file(self, path: Path) -> None:

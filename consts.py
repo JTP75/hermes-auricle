@@ -43,6 +43,7 @@ MISINPUT_PHRASES: frozenset[str] = frozenset({
 ENV_MIC_DEVICE               = "AURICLE_MIC_DEVICE"
 ENV_SPEAKER_DEVICE           = "AURICLE_SPEAKER_DEVICE"
 ENV_TTS_VOICE                = "AURICLE_TTS_VOICE"
+ENV_TTS_BACKEND              = "AURICLE_TTS_BACKEND"
 ENV_ACTIVE_LISTEN_DURATION   = "AURICLE_ACTIVE_LISTEN_DURATION"
 ENV_SESSION_RESUME           = "AURICLE_SESSION_RESUME"
 ENV_MUTE                     = "AURICLE_MUTE"
@@ -50,6 +51,12 @@ ENV_STT_BACKEND              = "AURICLE_STT_BACKEND"
 ENV_VOSK_MODEL_PATH          = "AURICLE_VOSK_MODEL_PATH"
 ENV_WHISPER_MODEL_ID         = "AURICLE_WHISPER_MODEL_ID"
 ENV_WHISPER_PYTHON           = "AURICLE_WHISPER_PYTHON"
+ENV_F5_PYTHON                = "AURICLE_F5_PYTHON"
+ENV_F5_MODEL                 = "AURICLE_F5_MODEL"
+ENV_F5_STEPS                 = "AURICLE_F5_STEPS"
+ENV_F5_SPEED                 = "AURICLE_F5_SPEED"
+ENV_F5_REF_WAV               = "AURICLE_F5_REF_WAV"
+ENV_F5_REF_TXT               = "AURICLE_F5_REF_TXT"
 ENV_OWW_WAKEWORD_MODEL_PATH  = "AURICLE_OWW_WAKEWORD_MODEL_PATH"
 ENV_OWW_MELSPEC_MODEL_PATH   = "AURICLE_OWW_MELSPEC_MODEL_PATH"
 ENV_OWW_EMBEDDING_MODEL_PATH = "AURICLE_OWW_EMBEDDING_MODEL_PATH"
@@ -65,6 +72,10 @@ ENV_SD_OUTPUT_DEVICE         = "AURICLE_SD_OUTPUT_DEVICE"
 DEFAULT_MIC_DEVICE               = "plughw:0,0"
 DEFAULT_SPEAKER_DEVICE           = "plughw:0,0"
 DEFAULT_TTS_VOICE                = "en-GB-LibbyNeural"
+DEFAULT_TTS_BACKEND              = "edge-tts"
+DEFAULT_F5_MODEL                 = "F5TTS_v1_Base"
+DEFAULT_F5_STEPS                 = 5
+DEFAULT_F5_SPEED                 = 1.0
 DEFAULT_ACTIVE_LISTEN_DURATION   = 5       # seconds
 DEFAULT_SESSION_RESUME           = True
 DEFAULT_MUTE                     = False
@@ -78,6 +89,11 @@ DEFAULT_AUDIO_INPUT              = "arecord"
 DEFAULT_AUDIO_OUTPUT             = "aplay"
 DEFAULT_SD_INPUT_DEVICE          = ""
 DEFAULT_SD_OUTPUT_DEVICE         = ""
+
+# ── F5 TTS ────────────────────────────────────────────────────────────────
+F5_SAMPLE_RATE         = 24000
+F5_BUNDLED_REF_RELPATH = "infer/examples/basic/basic_ref_en.wav"
+F5_DEFAULT_REF_TEXT    = "Some call me nature, others call me mother nature."
 
 # ── Whisper STT (VAD tuning) ───────────────────────────────────────────────
 WHISPER_VAD_AGGRESSIVENESS = 2    # webrtcvad 0 (permissive) – 3 (strict)

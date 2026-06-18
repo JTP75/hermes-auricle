@@ -31,10 +31,14 @@ from consts import (
     DEFAULT_SD_OUTPUT_DEVICE,
     DEFAULT_SPEAKER_DEVICE,
     DEFAULT_STT_BACKEND,
+    DEFAULT_TTS_BACKEND,
     DEFAULT_VOSK_MODEL_PATH,
     DOCTOR_MIC_SILENCE_THRESHOLD,
     ENV_AUDIO_INPUT,
     ENV_AUDIO_OUTPUT,
+    ENV_F5_PYTHON,
+    ENV_F5_REF_TXT,
+    ENV_F5_REF_WAV,
     ENV_MIC_DEVICE,
     ENV_OWW_EMBEDDING_MODEL_PATH,
     ENV_OWW_MELSPEC_MODEL_PATH,
@@ -43,6 +47,7 @@ from consts import (
     ENV_SD_OUTPUT_DEVICE,
     ENV_SPEAKER_DEVICE,
     ENV_STT_BACKEND,
+    ENV_TTS_BACKEND,
     ENV_VOSK_MODEL_PATH,
     ENV_WHISPER_PYTHON,
     FFMPEG_BIN,
@@ -186,11 +191,13 @@ def _check_env() -> None:
 
 # ── section B: active configuration ──────────────────────────────────────────
 
-def _check_config(issues: list[str]) -> tuple[str, str, str, str, str]:
-    """Validate and display active config. Returns (stt_backend, audio_in, audio_out, mic_device, spk_device)."""
+def _check_config(issues: list[str]) -> tuple[str, str, str, str, str, str]:
+    """Validate and display active config.
+    Returns (stt_backend, tts_backend, audio_in, audio_out, mic_device, spk_device)."""
     _sec("Active Configuration")
 
     stt_backend = os.getenv(ENV_STT_BACKEND, DEFAULT_STT_BACKEND).lower()
+    tts_backend = os.getenv(ENV_TTS_BACKEND, DEFAULT_TTS_BACKEND).lower()
     audio_in    = os.getenv(ENV_AUDIO_INPUT,  DEFAULT_AUDIO_INPUT).lower()
     audio_out   = os.getenv(ENV_AUDIO_OUTPUT, DEFAULT_AUDIO_OUTPUT).lower()
     mic_device  = os.getenv(ENV_MIC_DEVICE,   DEFAULT_MIC_DEVICE)
@@ -201,6 +208,12 @@ def _check_config(issues: list[str]) -> tuple[str, str, str, str, str]:
     else:
         _fail(f"STT backend: {stt_backend!r}", "must be 'vosk' or 'whisper'", issues)
         stt_backend = DEFAULT_STT_BACKEND
+
+    if tts_backend in ("edge-tts", "f5-tts"):
+        _ok(f"TTS backend:  {tts_backend}")
+    else:
+        _fail(f"TTS backend: {tts_backend!r}", "must be 'edge-tts' or 'f5-tts'", issues)
+        tts_backend = DEFAULT_TTS_BACKEND
 
     if audio_in in ("arecord", "sounddevice"):
         _ok(f"Audio input:  {audio_in}")
@@ -219,24 +232,33 @@ def _check_config(issues: list[str]) -> tuple[str, str, str, str, str]:
     _info(f"Mic device:     {mic_device}{mic_note}")
     _info(f"Speaker device: {spk_device}{spk_note}")
 
-    return stt_backend, audio_in, audio_out, mic_device, spk_device
+    return stt_backend, tts_backend, audio_in, audio_out, mic_device, spk_device
 
 
 # ── section C: python dependencies ───────────────────────────────────────────
 
-def _check_python_deps(issues: list[str], stt_backend: str, audio_in: str, audio_out: str) -> None:
+def _check_python_deps(issues: list[str], stt_backend: str, tts_backend: str,
+                       audio_in: str, audio_out: str) -> None:
     _sec("Python Dependencies")
 
     for pkg, label, pip_hint in [
         ("openwakeword", "openwakeword", "openwakeword"),
         ("numpy",        "numpy",        "numpy"),
-        ("edge_tts",     "edge-tts",     "edge-tts"),
     ]:
         try:
             __import__(pkg)
             _ok(label)
         except ImportError:
             _fail(label, f"pip install {pip_hint}", issues)
+
+    if tts_backend == "edge-tts":
+        try:
+            __import__("edge_tts")
+            _ok("edge-tts")
+        except ImportError:
+            _fail("edge-tts", "pip install edge-tts", issues)
+    else:
+        _info("edge-tts: skipped (f5-tts backend)")
 
     if stt_backend == "vosk":
         try:
@@ -379,7 +401,84 @@ def _check_whisper_shim(issues: list[str]) -> None:
         _fail("Whisper subprocess pipe probe", str(e), issues)
 
 
-# ── section G: audio devices ──────────────────────────────────────────────────
+# ── section G: F5-TTS shim ───────────────────────────────────────────────────
+
+def _check_f5_shim(issues: list[str]) -> None:
+    _sec("F5-TTS Shim")
+
+    python_path = os.getenv(ENV_F5_PYTHON, "").strip()
+    if not python_path:
+        _fail("AURICLE_F5_PYTHON", "not set", issues)
+        return
+
+    p = Path(python_path)
+    if not p.exists():
+        _fail("F5 Python binary", f"not found: {p}", issues)
+        return
+    if not os.access(p, os.X_OK):
+        _fail("F5 Python binary", f"not executable: {p}", issues)
+        return
+    _ok("F5 Python binary", f"({p})")
+
+    for pkg in ("f5_tts", "numpy", "torch"):
+        try:
+            result = subprocess.run(
+                [python_path, "-c", f"import {pkg}"],
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                _ok(f"F5 venv: {pkg}")
+            else:
+                stderr = result.stderr.decode("utf-8", errors="replace").strip()
+                _fail(f"F5 venv: {pkg}", stderr or "import failed", issues)
+        except subprocess.TimeoutExpired:
+            _fail(f"F5 venv: {pkg}", "import check timed out (>30s)", issues)
+        except Exception as e:
+            _fail(f"F5 venv: {pkg}", str(e), issues)
+
+    # Probe that subprocess pipe creation works (catches OS-level Popen failures).
+    try:
+        probe = subprocess.Popen(
+            [python_path, "-c", "import sys; sys.stdout.buffer.write(b'ok\\n'); sys.stdout.buffer.flush()"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        out, _ = probe.communicate(timeout=5)
+        if out.strip() == b"ok":
+            _ok("F5 subprocess pipe probe")
+        else:
+            _fail("F5 subprocess pipe probe", f"unexpected output: {out!r}", issues)
+    except subprocess.TimeoutExpired:
+        _fail("F5 subprocess pipe probe", "timed out", issues)
+    except Exception as e:
+        _fail("F5 subprocess pipe probe", str(e), issues)
+
+    # Check ref file paths if configured.
+    ref_wav = os.path.expanduser(os.getenv(ENV_F5_REF_WAV, "").strip())
+    ref_txt = os.path.expanduser(os.getenv(ENV_F5_REF_TXT, "").strip())
+    have_wav = bool(ref_wav)
+    have_txt = bool(ref_txt)
+
+    if have_wav and have_txt:
+        for path, label in [(ref_wav, "AURICLE_F5_REF_WAV"), (ref_txt, "AURICLE_F5_REF_TXT")]:
+            if Path(path).exists():
+                _ok(label, f"({path})")
+            else:
+                _fail(label, f"file not found: {path}", issues)
+    elif have_wav or have_txt:
+        _warn(
+            "F5 ref config",
+            "only one of AURICLE_F5_REF_WAV / AURICLE_F5_REF_TXT is set; "
+            "both are required for cloning — will fall back to bundled voice",
+        )
+    else:
+        _info("F5 ref: not configured — will use bundled voice")
+
+
+# ── section H: audio devices ──────────────────────────────────────────────────
 
 def _check_audio_devices(
     issues: list[str],
@@ -521,13 +620,16 @@ def run_doctor() -> int:
     print(_c("└─────────────────────────────────────────────────────────┘", _C))
 
     _check_env()
-    stt_backend, audio_in, audio_out, mic_device, spk_device = _check_config(issues)
-    _check_python_deps(issues, stt_backend, audio_in, audio_out)
+    stt_backend, tts_backend, audio_in, audio_out, mic_device, spk_device = _check_config(issues)
+    _check_python_deps(issues, stt_backend, tts_backend, audio_in, audio_out)
     binaries_ok = _check_binaries(issues, audio_in, audio_out)
     _check_files(issues, stt_backend)
 
     if stt_backend == "whisper":
         _check_whisper_shim(issues)
+
+    if tts_backend == "f5-tts":
+        _check_f5_shim(issues)
 
     _check_audio_devices(issues, audio_in, audio_out, mic_device, spk_device, binaries_ok)
 

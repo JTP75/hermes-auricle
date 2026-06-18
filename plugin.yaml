@@ -17,6 +17,10 @@ optional_env:
     description: "ALSA device string for aplay (default: plughw:0,0)"
     prompt: "Speaker device"
     password: false
+  - name: AURICLE_TTS_BACKEND
+    description: "TTS backend: edge-tts (default, cloud) or f5-tts (local GPU, voice cloning)"
+    prompt: "TTS backend (edge-tts or f5-tts)"
+    password: false
   - name: AURICLE_TTS_VOICE
     description: "edge-tts voice name (default: en-GB-LibbyNeural)"
     prompt: "TTS voice"
@@ -48,6 +52,30 @@ optional_env:
   - name: AURICLE_WHISPER_PYTHON
     description: "Path to a Python 3.10 binary with torch/transformers/webrtcvad installed (required for whisper backend)"
     prompt: "Whisper Python path (e.g. /path/to/whisper-venv/bin/python)"
+    password: false
+  - name: AURICLE_F5_PYTHON
+    description: "Path to a Python binary in the f5-tts venv with f5_tts and torch installed (required for f5-tts backend)"
+    prompt: "F5-TTS Python path (e.g. ~/f5-venv/bin/python)"
+    password: false
+  - name: AURICLE_F5_MODEL
+    description: "F5-TTS model name (default: F5TTS_v1_Base)"
+    prompt: "F5-TTS model name"
+    password: false
+  - name: AURICLE_F5_STEPS
+    description: "F5-TTS flow-matching steps; lower = faster, default 5 is a good quality/speed balance"
+    prompt: "F5-TTS inference steps (default: 5)"
+    password: false
+  - name: AURICLE_F5_SPEED
+    description: "F5-TTS speech speed multiplier (default: 1.0)"
+    prompt: "F5-TTS speed (default: 1.0)"
+    password: false
+  - name: AURICLE_F5_REF_WAV
+    description: "Path to reference WAV for F5 voice cloning (5-15s, 24kHz mono). Both REF_WAV and REF_TXT must be set to enable cloning; omit both to use the bundled default voice."
+    prompt: "F5-TTS reference WAV path"
+    password: false
+  - name: AURICLE_F5_REF_TXT
+    description: "Path to a text file containing the exact transcript of AURICLE_F5_REF_WAV. Both must be set to enable cloning."
+    prompt: "F5-TTS reference transcript path"
     password: false
   - name: AURICLE_OWW_WAKEWORD_MODEL_PATH
     description: "Path to the openWakeWord .tflite wakeword model file"

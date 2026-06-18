@@ -45,7 +45,11 @@ from .consts import (
     DEFAULT_AUDIO_OUTPUT,
     DEFAULT_SD_INPUT_DEVICE,
     DEFAULT_SD_OUTPUT_DEVICE,
+    DEFAULT_F5_MODEL,
+    DEFAULT_F5_SPEED,
+    DEFAULT_F5_STEPS,
     DEFAULT_STT_BACKEND,
+    DEFAULT_TTS_BACKEND,
     DEFAULT_TTS_VOICE,
     DEFAULT_VOSK_MODEL_PATH,
     DEFAULT_WHISPER_MODEL_ID,
@@ -71,7 +75,14 @@ from .consts import (
     ENV_SLEEP_FLUX_THRESHOLD,
     ENV_SLEEP_TIMEOUT,
     ENV_SLEEP_WAKE_SENSITIVITY,
+    ENV_F5_MODEL,
+    ENV_F5_PYTHON,
+    ENV_F5_REF_TXT,
+    ENV_F5_REF_WAV,
+    ENV_F5_SPEED,
+    ENV_F5_STEPS,
     ENV_STT_BACKEND,
+    ENV_TTS_BACKEND,
     ENV_TTS_VOICE,
     ENV_VOSK_MODEL_PATH,
     ENV_WHISPER_MODEL_ID,
@@ -99,7 +110,7 @@ from .classifier import SystemMessageClassifier
 from .egress import EgressController
 from .fsm import FSM, State
 from .ingress import run_ingress_loop
-from .providers import EdgeTTSProvider, VoskSTTProvider, WhisperSTTProvider
+from .providers import EdgeTTSProvider, F5TTSProvider, VoskSTTProvider, WhisperSTTProvider
 from .sleep import SleepDetector
 
 logger = logging.getLogger(__name__)
@@ -137,7 +148,19 @@ class AuricleAdapter(BasePlatformAdapter):
             self._stt = VoskSTTProvider(
                 os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH))
             )
-        self._tts          = EdgeTTSProvider(os.getenv(ENV_TTS_VOICE, DEFAULT_TTS_VOICE))
+        _tts_backend = os.getenv(ENV_TTS_BACKEND, DEFAULT_TTS_BACKEND).lower()
+        if _tts_backend == "f5-tts":
+            self._tts = F5TTSProvider(
+                model=os.getenv(ENV_F5_MODEL, DEFAULT_F5_MODEL),
+                python_path=os.getenv(ENV_F5_PYTHON, ""),
+                worker_path=os.path.join(os.path.dirname(__file__), "f5_worker.py"),
+                steps=int(os.getenv(ENV_F5_STEPS, str(DEFAULT_F5_STEPS))),
+                speed=float(os.getenv(ENV_F5_SPEED, str(DEFAULT_F5_SPEED))),
+                ref_wav=os.path.expanduser(os.getenv(ENV_F5_REF_WAV, "")),
+                ref_txt=os.path.expanduser(os.getenv(ENV_F5_REF_TXT, "")),
+            )
+        else:
+            self._tts = EdgeTTSProvider(os.getenv(ENV_TTS_VOICE, DEFAULT_TTS_VOICE))
         self._audio_input  = _make_audio_input()
         self._audio_output = _make_audio_output()
         self._egress       = EgressController(self._tts, self._barge_in, self._audio_buffer, self._audio_output)
@@ -195,7 +218,9 @@ class AuricleAdapter(BasePlatformAdapter):
     def _connect_real(self) -> bool:
         """Synchronous: validate environment, load models, start subprocess and ingress thread."""
         # Binaries
-        required_binaries = [FFMPEG_BIN, EDGE_TTS_BIN]
+        required_binaries = [FFMPEG_BIN]
+        if isinstance(self._tts, EdgeTTSProvider):
+            required_binaries.append(EDGE_TTS_BIN)
         if os.getenv(ENV_AUDIO_INPUT, DEFAULT_AUDIO_INPUT).lower() == "arecord":
             required_binaries.append("arecord")
         if os.getenv(ENV_AUDIO_OUTPUT, DEFAULT_AUDIO_OUTPUT).lower() == "aplay":
@@ -246,6 +271,17 @@ class AuricleAdapter(BasePlatformAdapter):
             logger.error("[auricle] %s", msg)
             self._set_fatal_error("model_load_failed", msg, retryable=True)
             return False
+
+        # Load TTS (F5 only; edge-tts loads lazily per-sentence)
+        if isinstance(self._tts, F5TTSProvider):
+            try:
+                logger.info("[auricle] loading F5-TTS worker")
+                self._tts.load()
+            except Exception as exc:
+                msg = f"Failed to load F5-TTS worker: {exc}"
+                logger.error("[auricle] %s", msg)
+                self._set_fatal_error("model_load_failed", msg, retryable=True)
+                return False
 
         # Load OWW
         try:
@@ -334,6 +370,9 @@ class AuricleAdapter(BasePlatformAdapter):
 
         if isinstance(self._stt, WhisperSTTProvider):
             self._stt.terminate()
+
+        if isinstance(self._tts, F5TTSProvider):
+            self._tts.terminate()
 
         self._audio_input.close()
 
