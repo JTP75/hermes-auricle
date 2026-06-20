@@ -57,6 +57,8 @@ ENV_F5_STEPS                 = "AURICLE_F5_STEPS"
 ENV_F5_SPEED                 = "AURICLE_F5_SPEED"
 ENV_F5_REF_WAV               = "AURICLE_F5_REF_WAV"
 ENV_F5_REF_TXT               = "AURICLE_F5_REF_TXT"
+ENV_KOKORO_PYTHON            = "AURICLE_KOKORO_PYTHON"
+ENV_KOKORO_VOICE             = "AURICLE_KOKORO_VOICE"
 ENV_OWW_WAKEWORD_MODEL_PATH  = "AURICLE_OWW_WAKEWORD_MODEL_PATH"
 ENV_OWW_MELSPEC_MODEL_PATH   = "AURICLE_OWW_MELSPEC_MODEL_PATH"
 ENV_OWW_EMBEDDING_MODEL_PATH = "AURICLE_OWW_EMBEDDING_MODEL_PATH"
@@ -76,6 +78,7 @@ DEFAULT_TTS_BACKEND              = "edge-tts"
 DEFAULT_F5_MODEL                 = "F5TTS_v1_Base"
 DEFAULT_F5_STEPS                 = 5
 DEFAULT_F5_SPEED                 = 1.0
+DEFAULT_KOKORO_VOICE             = "af_heart"
 DEFAULT_ACTIVE_LISTEN_DURATION   = 5       # seconds
 DEFAULT_SESSION_RESUME           = True
 DEFAULT_MUTE                     = False
@@ -94,6 +97,9 @@ DEFAULT_SD_OUTPUT_DEVICE         = ""
 F5_SAMPLE_RATE         = 24000
 F5_BUNDLED_REF_RELPATH = "infer/examples/basic/basic_ref_en.wav"
 F5_DEFAULT_REF_TEXT    = "Some call me nature, others call me mother nature."
+
+# ── Kokoro TTS ────────────────────────────────────────────────────────────
+KOKORO_SAMPLE_RATE = 24000
 
 # ── Whisper STT (VAD tuning) ───────────────────────────────────────────────
 WHISPER_VAD_AGGRESSIVENESS = 2    # webrtcvad 0 (permissive) – 3 (strict)

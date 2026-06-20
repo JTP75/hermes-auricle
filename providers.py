@@ -332,3 +332,126 @@ class F5TTSProvider(TTSProvider):
             self._proc.terminate()
         self._proc = None
         self._ready_event.clear()
+
+
+# ── Kokoro-TTS ─────────────────────────────────────────────────────────────
+
+class KokoroTTSProvider(TTSProvider):
+    """
+    Subprocess-backed Kokoro-TTS provider.
+
+    Spawns kokoro_worker.py in ~/kokoro-venv (Python 3.10, kokoro 0.9.x). The model
+    loads once on load(); stream_audio() sends one synth request per sentence and
+    yields the returned WAV bytes (RIFF, 24 kHz mono s16le) for the egress pipeline.
+
+    Wire protocol: identical to F5TTSProvider.
+      Handshake (stdout, line):  READY\\n
+      Request  0x01 + uint32_be(len) + <len> text UTF-8  →  synth
+      Request  0x03                                       →  shutdown
+      Response 0x01 + uint32_be(n) + <n> WAV bytes       →  success
+      Response 0x00 + uint32_be(0)                        →  blank input, no audio
+      Response 0x02 + uint32_be(n) + <n> UTF-8 error      →  synthesis error
+    """
+
+    def __init__(self, voice: str, python_path: str, worker_path: str) -> None:
+        self._voice       = voice
+        self._python_path = python_path
+        self._worker_path = worker_path
+        self._proc: Optional[subprocess.Popen] = None
+        self._stderr_thread: Optional[threading.Thread] = None
+        self._lock = asyncio.Lock()
+        self._ready_event = threading.Event()
+
+    def load(self) -> None:
+        # If a worker is already loading or ready, don't spawn another one.
+        if self._proc and self._proc.poll() is None:
+            return
+
+        self._ready_event.clear()
+        self._proc = None
+
+        self._proc = subprocess.Popen(
+            [self._python_path, self._worker_path, "--voice", self._voice],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        self._start_stderr_forwarder()
+        threading.Thread(target=self._wait_for_ready, daemon=True).start()
+
+    def _wait_for_ready(self) -> None:
+        """Background thread: waits for READY from the worker and sets _ready_event."""
+        line = self._proc.stdout.readline()
+        if line and line.strip() == b"READY":
+            self._ready_event.set()
+            logger.info("[auricle] Kokoro-TTS worker ready")
+        else:
+            logger.error(
+                "[auricle] Kokoro-TTS worker exited before sending READY (got %r). "
+                "Check AURICLE_KOKORO_PYTHON and its installed dependencies.",
+                line,
+            )
+
+    def _start_stderr_forwarder(self) -> None:
+        proc = self._proc
+        def _drain():
+            for raw in proc.stderr:
+                msg = raw.decode("utf-8", errors="replace").rstrip()
+                if msg:
+                    logger.debug("[auricle/kokoro_worker] %s", msg)
+        t = threading.Thread(target=_drain, daemon=True)
+        t.start()
+        self._stderr_thread = t
+
+    def _synth_request(self, text: str) -> bytes:
+        """Blocking: send one synth request and return WAV bytes (or b'' on error/blank)."""
+        if not self._ready_event.wait(timeout=120):
+            raise RuntimeError("Kokoro-TTS worker did not become ready within 120s")
+        if self._proc is None or self._proc.poll() is not None:
+            raise RuntimeError("KokoroTTSProvider worker is not running")
+        encoded = text.encode("utf-8")
+        self._proc.stdin.write(b"\x01" + struct.pack(">I", len(encoded)) + encoded)
+        self._proc.stdin.flush()
+
+        status = self._proc.stdout.read(1)
+        if not status:
+            raise RuntimeError("kokoro_worker closed stdout unexpectedly")
+        n_bytes = _read_exact_pipe(self._proc.stdout, 4)
+        if len(n_bytes) < 4:
+            raise RuntimeError("kokoro_worker truncated length field")
+        n = struct.unpack(">I", n_bytes)[0]
+        payload = _read_exact_pipe(self._proc.stdout, n) if n > 0 else b""
+
+        if status[0] == 0x01:
+            return payload
+        if status[0] == 0x00:
+            return b""
+        if status[0] == 0x02:
+            logger.error("[auricle/kokoro_worker] synthesis error: %s",
+                         payload.decode("utf-8", errors="replace"))
+            return b""
+        logger.error("[auricle/kokoro_worker] unknown response status: %#04x", status[0])
+        return b""
+
+    async def stream_audio(self, sentence: str) -> AsyncIterator[bytes]:
+        clean = _MARKDOWN_RE.sub("", sentence).strip()
+        if not clean:
+            return
+        loop = asyncio.get_running_loop()
+        async with self._lock:
+            wav_bytes = await loop.run_in_executor(None, self._synth_request, clean)
+        if wav_bytes:
+            yield wav_bytes
+
+    def terminate(self) -> None:
+        """Shut down the worker process. Called by the adapter on disconnect."""
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.stdin.write(b"\x03")
+                self._proc.stdin.flush()
+            except OSError:
+                pass
+            self._proc.terminate()
+        self._proc = None
+        self._ready_event.clear()

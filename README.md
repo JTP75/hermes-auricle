@@ -3,7 +3,7 @@
 A local voice platform plugin for [hermes](https://github.com/nousresearch/hermes-agent). Turns a Raspberry Pi + Jabra Speak 510 USB into an Alexa-style smart speaker. STT is fully offline (vosk); TTS uses Edge-TTS and requires an internet connection.
 
 - **Wakeword + STT**: [openWakeWord](https://github.com/dscripka/openWakeWord) (neural detector) + pluggable STT backend: [vosk](https://alphacephei.com/vosk/) (offline, CPU) or [distil-whisper](https://huggingface.co/distil-whisper/distil-large-v3) (GPU-accelerated via HuggingFace transformers)
-- **TTS + playback**: pluggable TTS backend — [edge-tts](https://github.com/rany2/edge-tts) (default, cloud) or [F5-TTS](https://github.com/SWivid/F5-TTS) (local GPU, voice cloning) — piped to `aplay` via `ffmpeg`
+- **TTS + playback**: pluggable TTS backend — [edge-tts](https://github.com/rany2/edge-tts) (default, cloud), [F5-TTS](https://github.com/SWivid/F5-TTS) (local GPU, voice cloning), or [Kokoro-82M](https://github.com/hexgrad/kokoro) (local, fast) — piped to `aplay` via `ffmpeg`
 - **Target hardware**: Raspberry Pi + Jabra Speak 510 USB (mic + speaker in one device, hardware echo cancellation)
 
 ---
@@ -29,6 +29,13 @@ python3.10 -m venv ~/f5-venv
 ~/f5-venv/bin/pip install f5-tts torch torchaudio
 # 2. Set AURICLE_TTS_BACKEND=f5-tts and AURICLE_F5_PYTHON=~/f5-venv/bin/python
 # 3. Optionally set AURICLE_F5_REF_WAV and AURICLE_F5_REF_TXT for voice cloning
+
+# kokoro-tts backend (local, fast, no GPU required)
+sudo apt-get install espeak-ng          # phonemizer backend
+python3.10 -m venv ~/kokoro-venv
+~/kokoro-venv/bin/pip install kokoro soundfile
+# Set AURICLE_TTS_BACKEND=kokoro-tts and AURICLE_KOKORO_PYTHON=~/kokoro-venv/bin/python
+# Optionally set AURICLE_KOKORO_VOICE (default: af_heart)
 ```
 
 **System packages** (Debian/Ubuntu)
@@ -96,13 +103,15 @@ All settings live under a top-level `auricle:` key in `~/.hermes/config.yaml`. E
 | `sleep_flux_threshold` | `AURICLE_SLEEP_FLUX_THRESHOLD` | `0.02` | Normalized flux EMA cutoff for "quiet" classification |
 | `session_auto_clear` | `AURICLE_SESSION_AUTO_CLEAR` | `true` | Clear session history after a period of inactivity |
 | `session_clear_after` | `AURICLE_SESSION_CLEAR_AFTER` | `3600` | Seconds of inactivity before session history is cleared |
-| `tts_backend` | `AURICLE_TTS_BACKEND` | `edge-tts` | TTS backend: `edge-tts` or `f5-tts` |
+| `tts_backend` | `AURICLE_TTS_BACKEND` | `edge-tts` | TTS backend: `edge-tts`, `f5-tts`, or `kokoro-tts` |
 | `f5_python` | `AURICLE_F5_PYTHON` | *(required)* | Path to the Python binary in the f5-tts venv (f5-tts backend only) |
 | `f5_model` | `AURICLE_F5_MODEL` | `F5TTS_v1_Base` | F5-TTS model name (f5-tts backend only) |
 | `f5_steps` | `AURICLE_F5_STEPS` | `5` | Flow-matching inference steps; lower = faster (f5-tts backend only) |
 | `f5_speed` | `AURICLE_F5_SPEED` | `1.0` | Speech speed multiplier (f5-tts backend only) |
 | `f5_ref_wav` | `AURICLE_F5_REF_WAV` | *(optional)* | Path to reference WAV for voice cloning — 5–15s, 24 kHz mono (f5-tts backend only) |
 | `f5_ref_txt` | `AURICLE_F5_REF_TXT` | *(optional)* | Path to exact transcript of `F5_REF_WAV`. Both must be set to enable cloning; omit both for the bundled default voice. (f5-tts backend only) |
+| `kokoro_python` | `AURICLE_KOKORO_PYTHON` | *(required)* | Path to the Python binary in the kokoro-tts venv (kokoro-tts backend only) |
+| `kokoro_voice` | `AURICLE_KOKORO_VOICE` | `af_heart` | Kokoro voice name. `af_*`/`am_*` = American English; `bf_*`/`bm_*` = British English. (kokoro-tts backend only) |
 
 Example `config.yaml` block:
 ```yaml
@@ -134,7 +143,7 @@ These are matched against the full vosk transcript (exact, case-insensitive). **
 
 **Egress:** The full agent response arrives in one `send()` call and is segmented internally by newlines into units. Each unit is synthesized by the active TTS backend and piped through `ffmpeg` to `aplay`. While the current unit plays, the next one is pre-fetched concurrently (lookahead). Barge-in (wakeword during TTS) kills playback immediately and opens a new listen window. TTS output is capped at 3000 characters per response across both the streaming and proactive delivery paths; playback stops at a sentence boundary once the cap is reached.
 
-**TTS backends:** `edge-tts` (default) streams MP3 from Microsoft's cloud and requires an internet connection. `f5-tts` runs entirely locally using [F5-TTS](https://github.com/SWivid/F5-TTS) (flow-matching, GPU) in a dedicated Python venv. F5 supports voice cloning: set `AURICLE_F5_REF_WAV` and `AURICLE_F5_REF_TXT` together (both or neither — setting only one is a misconfiguration and falls back to the bundled default voice with a warning). F5 synthesizes each segment completely before playback starts, so first-word latency is higher than edge-tts; at `AURICLE_F5_STEPS=5` this is typically under two seconds for short responses.
+**TTS backends:** `edge-tts` (default) streams MP3 from Microsoft's cloud and requires an internet connection. `f5-tts` runs entirely locally using [F5-TTS](https://github.com/SWivid/F5-TTS) (flow-matching, GPU) in a dedicated Python venv. F5 supports voice cloning: set `AURICLE_F5_REF_WAV` and `AURICLE_F5_REF_TXT` together (both or neither — setting only one is a misconfiguration and falls back to the bundled default voice with a warning). F5 synthesizes each segment completely before playback starts, so first-word latency is higher than edge-tts; at `AURICLE_F5_STEPS=5` this is typically under two seconds for short responses. `kokoro-tts` runs [Kokoro-82M](https://github.com/hexgrad/kokoro) locally in a dedicated Python venv; it is fast, does not require a GPU, and does not support voice cloning. The voice name also controls the accent: `af_*`/`am_*` prefixes produce American English; `bf_*`/`bm_*` produce British English. Requires `espeak-ng` on the system PATH.
 
 **Active-listen window:** After TTS ends, the mic stays open for 5 seconds (configurable) without requiring the wakeword. This allows natural follow-up questions. The tosleep chime plays on expiry.
 
@@ -181,6 +190,7 @@ hermes-auricle/
   sleep.py             SleepDetector — spectral flux EMA for auto-sleep
   whisper_worker.py    STT subprocess (Python 3.10 + torch/transformers/webrtcvad); whisper backend only
   f5_worker.py         TTS subprocess (f5-tts venv + f5_tts/torch); f5-tts backend only
+  kokoro_worker.py     TTS subprocess (kokoro-tts venv + kokoro); kokoro-tts backend only
   assets/              auricle-wakeup / auricle-tosleep / auricle-notify / auricle-confused WAVs
   models/              model files (not committed)
 ```

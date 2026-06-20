@@ -39,6 +39,7 @@ from consts import (
     ENV_F5_PYTHON,
     ENV_F5_REF_TXT,
     ENV_F5_REF_WAV,
+    ENV_KOKORO_PYTHON,
     ENV_MIC_DEVICE,
     ENV_OWW_EMBEDDING_MODEL_PATH,
     ENV_OWW_MELSPEC_MODEL_PATH,
@@ -209,10 +210,10 @@ def _check_config(issues: list[str]) -> tuple[str, str, str, str, str, str]:
         _fail(f"STT backend: {stt_backend!r}", "must be 'vosk' or 'whisper'", issues)
         stt_backend = DEFAULT_STT_BACKEND
 
-    if tts_backend in ("edge-tts", "f5-tts"):
+    if tts_backend in ("edge-tts", "f5-tts", "kokoro-tts"):
         _ok(f"TTS backend:  {tts_backend}")
     else:
-        _fail(f"TTS backend: {tts_backend!r}", "must be 'edge-tts' or 'f5-tts'", issues)
+        _fail(f"TTS backend: {tts_backend!r}", "must be 'edge-tts', 'f5-tts', or 'kokoro-tts'", issues)
         tts_backend = DEFAULT_TTS_BACKEND
 
     if audio_in in ("arecord", "sounddevice"):
@@ -258,7 +259,7 @@ def _check_python_deps(issues: list[str], stt_backend: str, tts_backend: str,
         except ImportError:
             _fail("edge-tts", "pip install edge-tts", issues)
     else:
-        _info("edge-tts: skipped (f5-tts backend)")
+        _info("edge-tts: skipped (non-edge backend)")
 
     if stt_backend == "vosk":
         try:
@@ -478,7 +479,69 @@ def _check_f5_shim(issues: list[str]) -> None:
         _info("F5 ref: not configured — will use bundled voice")
 
 
-# ── section H: audio devices ──────────────────────────────────────────────────
+# ── section H: Kokoro-TTS shim ───────────────────────────────────────────────
+
+def _check_kokoro_shim(issues: list[str]) -> None:
+    _sec("Kokoro-TTS Shim")
+
+    python_path = os.getenv(ENV_KOKORO_PYTHON, "").strip()
+    if not python_path:
+        _fail("AURICLE_KOKORO_PYTHON", "not set", issues)
+        return
+
+    p = Path(python_path)
+    if not p.exists():
+        _fail("Kokoro Python binary", f"not found: {p}", issues)
+        return
+    if not os.access(p, os.X_OK):
+        _fail("Kokoro Python binary", f"not executable: {p}", issues)
+        return
+    _ok("Kokoro Python binary", f"({p})")
+
+    for pkg in ("kokoro", "numpy"):
+        try:
+            result = subprocess.run(
+                [python_path, "-c", f"import {pkg}"],
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                _ok(f"Kokoro venv: {pkg}")
+            else:
+                stderr = result.stderr.decode("utf-8", errors="replace").strip()
+                _fail(f"Kokoro venv: {pkg}", stderr or "import failed", issues)
+        except subprocess.TimeoutExpired:
+            _fail(f"Kokoro venv: {pkg}", "import check timed out (>30s)", issues)
+        except Exception as e:
+            _fail(f"Kokoro venv: {pkg}", str(e), issues)
+
+    # espeak-ng is the phonemizer backend — must be on the system PATH.
+    if shutil.which("espeak-ng"):
+        _ok("espeak-ng (phonemizer backend)")
+    else:
+        _fail("espeak-ng", "not found on PATH — required by kokoro; install with: apt-get install espeak-ng", issues)
+
+    # Probe that subprocess pipe creation works (catches OS-level Popen failures).
+    try:
+        probe = subprocess.Popen(
+            [python_path, "-c", "import sys; sys.stdout.buffer.write(b'ok\\n'); sys.stdout.buffer.flush()"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        out, _ = probe.communicate(timeout=5)
+        if out.strip() == b"ok":
+            _ok("Kokoro subprocess pipe probe")
+        else:
+            _fail("Kokoro subprocess pipe probe", f"unexpected output: {out!r}", issues)
+    except subprocess.TimeoutExpired:
+        _fail("Kokoro subprocess pipe probe", "timed out", issues)
+    except Exception as e:
+        _fail("Kokoro subprocess pipe probe", str(e), issues)
+
+
+# ── section I: audio devices ──────────────────────────────────────────────────
 
 def _check_audio_devices(
     issues: list[str],
@@ -630,6 +693,9 @@ def run_doctor() -> int:
 
     if tts_backend == "f5-tts":
         _check_f5_shim(issues)
+
+    if tts_backend == "kokoro-tts":
+        _check_kokoro_shim(issues)
 
     _check_audio_devices(issues, audio_in, audio_out, mic_device, spk_device, binaries_ok)
 

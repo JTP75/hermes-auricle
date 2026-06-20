@@ -48,6 +48,7 @@ from .consts import (
     DEFAULT_F5_MODEL,
     DEFAULT_F5_SPEED,
     DEFAULT_F5_STEPS,
+    DEFAULT_KOKORO_VOICE,
     DEFAULT_STT_BACKEND,
     DEFAULT_TTS_BACKEND,
     DEFAULT_TTS_VOICE,
@@ -81,6 +82,8 @@ from .consts import (
     ENV_F5_REF_WAV,
     ENV_F5_SPEED,
     ENV_F5_STEPS,
+    ENV_KOKORO_PYTHON,
+    ENV_KOKORO_VOICE,
     ENV_STT_BACKEND,
     ENV_TTS_BACKEND,
     ENV_TTS_VOICE,
@@ -110,7 +113,7 @@ from .classifier import SystemMessageClassifier
 from .egress import EgressController
 from .fsm import FSM, State
 from .ingress import run_ingress_loop
-from .providers import EdgeTTSProvider, F5TTSProvider, VoskSTTProvider, WhisperSTTProvider
+from .providers import EdgeTTSProvider, F5TTSProvider, KokoroTTSProvider, VoskSTTProvider, WhisperSTTProvider
 from .sleep import SleepDetector
 
 logger = logging.getLogger(__name__)
@@ -158,6 +161,12 @@ class AuricleAdapter(BasePlatformAdapter):
                 speed=float(os.getenv(ENV_F5_SPEED, str(DEFAULT_F5_SPEED))),
                 ref_wav=os.path.expanduser(os.getenv(ENV_F5_REF_WAV, "")),
                 ref_txt=os.path.expanduser(os.getenv(ENV_F5_REF_TXT, "")),
+            )
+        elif _tts_backend == "kokoro-tts":
+            self._tts = KokoroTTSProvider(
+                voice=os.getenv(ENV_KOKORO_VOICE, DEFAULT_KOKORO_VOICE),
+                python_path=os.getenv(ENV_KOKORO_PYTHON, ""),
+                worker_path=os.path.join(os.path.dirname(__file__), "kokoro_worker.py"),
             )
         else:
             self._tts = EdgeTTSProvider(os.getenv(ENV_TTS_VOICE, DEFAULT_TTS_VOICE))
@@ -272,13 +281,13 @@ class AuricleAdapter(BasePlatformAdapter):
             self._set_fatal_error("model_load_failed", msg, retryable=True)
             return False
 
-        # Load TTS (F5 only; edge-tts loads lazily per-sentence)
-        if isinstance(self._tts, F5TTSProvider):
+        # Load TTS (worker-backed backends; edge-tts loads lazily per-sentence)
+        if isinstance(self._tts, (F5TTSProvider, KokoroTTSProvider)):
             try:
-                logger.info("[auricle] loading F5-TTS worker")
+                logger.info("[auricle] loading TTS worker (%s)", type(self._tts).__name__)
                 self._tts.load()
             except Exception as exc:
-                msg = f"Failed to load F5-TTS worker: {exc}"
+                msg = f"Failed to load TTS worker: {exc}"
                 logger.error("[auricle] %s", msg)
                 self._set_fatal_error("model_load_failed", msg, retryable=True)
                 return False
@@ -371,7 +380,7 @@ class AuricleAdapter(BasePlatformAdapter):
         if isinstance(self._stt, WhisperSTTProvider):
             self._stt.terminate()
 
-        if isinstance(self._tts, F5TTSProvider):
+        if isinstance(self._tts, (F5TTSProvider, KokoroTTSProvider)):
             self._tts.terminate()
 
         self._audio_input.close()

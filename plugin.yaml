@@ -18,8 +18,8 @@ optional_env:
     prompt: "Speaker device"
     password: false
   - name: AURICLE_TTS_BACKEND
-    description: "TTS backend: edge-tts (default, cloud) or f5-tts (local GPU, voice cloning)"
-    prompt: "TTS backend (edge-tts or f5-tts)"
+    description: "TTS backend: edge-tts (default, cloud), f5-tts (local GPU, voice cloning), or kokoro-tts (local, fast)"
+    prompt: "TTS backend (edge-tts, f5-tts, or kokoro-tts)"
     password: false
   - name: AURICLE_TTS_VOICE
     description: "edge-tts voice name (default: en-GB-LibbyNeural)"
@@ -76,6 +76,14 @@ optional_env:
   - name: AURICLE_F5_REF_TXT
     description: "Path to a text file containing the exact transcript of AURICLE_F5_REF_WAV. Both must be set to enable cloning."
     prompt: "F5-TTS reference transcript path"
+    password: false
+  - name: AURICLE_KOKORO_PYTHON
+    description: "Path to a Python binary in the kokoro-tts venv with kokoro installed (required for kokoro-tts backend)"
+    prompt: "Kokoro-TTS Python path (e.g. ~/kokoro-venv/bin/python)"
+    password: false
+  - name: AURICLE_KOKORO_VOICE
+    description: "Kokoro voice name (default: af_heart). af_*/am_* = American English, bf_*/bm_* = British English."
+    prompt: "Kokoro voice (default: af_heart)"
     password: false
   - name: AURICLE_OWW_WAKEWORD_MODEL_PATH
     description: "Path to the openWakeWord .tflite wakeword model file"
