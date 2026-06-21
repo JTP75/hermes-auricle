@@ -1,113 +1,22 @@
 name: hermes-auricle
 label: Auricle
 kind: platform
-version: 0.1.0
+version: 0.2.0
 description: >
-  Local voice platform for hermes. Wakeword + STT on the mic,
-  TTS on the speaker. Designed for Raspberry Pi + Jabra Speak 510 USB.
-  All audio processing is fully local — no cloud STT or TTS.
+  Hermes connector for auricle-engine. Bridges hermes-agent to a running
+  auricle-engine instance over WebSocket. The engine handles all audio
+  processing (wakeword, STT, TTS); this plugin contains only the hermes
+  platform adapter logic.
 author: Justin Pacella
 
 optional_env:
-  - name: AURICLE_MIC_DEVICE
-    description: "ALSA device string for arecord (default: plughw:0,0)"
-    prompt: "Mic device"
-    password: false
-  - name: AURICLE_SPEAKER_DEVICE
-    description: "ALSA device string for aplay (default: plughw:0,0)"
-    prompt: "Speaker device"
-    password: false
-  - name: AURICLE_TTS_BACKEND
-    description: "TTS backend: edge-tts (default, cloud), f5-tts (local GPU, voice cloning), or kokoro-tts (local, fast)"
-    prompt: "TTS backend (edge-tts, f5-tts, or kokoro-tts)"
-    password: false
-  - name: AURICLE_TTS_VOICE
-    description: "edge-tts voice name (default: en-GB-LibbyNeural)"
-    prompt: "TTS voice"
-    password: false
-  - name: AURICLE_ACTIVE_LISTEN_DURATION
-    description: "Seconds of active-listen window after TTS ends (default: 5)"
-    prompt: "Active-listen duration (seconds)"
+  - name: AURICLE_ENGINE_WS_URL
+    description: "WebSocket URL of the auricle-engine server (default: ws://localhost:57310)"
+    prompt: "auricle-engine WebSocket URL"
     password: false
   - name: AURICLE_SESSION_RESUME
     description: "Resume existing session on hermes restart (default: true)"
     prompt: "Resume session on restart? (true/false)"
-    password: false
-  - name: AURICLE_MUTE
-    description: "Disable mic wakeword path on startup (default: false)"
-    prompt: "Start muted? (true/false)"
-    password: false
-  - name: AURICLE_STT_BACKEND
-    description: "STT backend to use: vosk (default, CPU-only) or whisper (GPU-accelerated)"
-    prompt: "STT backend (vosk or whisper)"
-    password: false
-  - name: AURICLE_VOSK_MODEL_PATH
-    description: "Path to the vosk model directory (vosk backend only)"
-    prompt: "Vosk model path"
-    password: false
-  - name: AURICLE_WHISPER_MODEL_ID
-    description: "HuggingFace model ID for whisper backend (default: distil-whisper/distil-large-v3)"
-    prompt: "Whisper model ID"
-    password: false
-  - name: AURICLE_WHISPER_PYTHON
-    description: "Path to a Python 3.10 binary with torch/transformers/webrtcvad installed (required for whisper backend)"
-    prompt: "Whisper Python path (e.g. /path/to/whisper-venv/bin/python)"
-    password: false
-  - name: AURICLE_F5_PYTHON
-    description: "Path to a Python binary in the f5-tts venv with f5_tts and torch installed (required for f5-tts backend)"
-    prompt: "F5-TTS Python path (e.g. ~/f5-venv/bin/python)"
-    password: false
-  - name: AURICLE_F5_MODEL
-    description: "F5-TTS model name (default: F5TTS_v1_Base)"
-    prompt: "F5-TTS model name"
-    password: false
-  - name: AURICLE_F5_STEPS
-    description: "F5-TTS flow-matching steps; lower = faster, default 5 is a good quality/speed balance"
-    prompt: "F5-TTS inference steps (default: 5)"
-    password: false
-  - name: AURICLE_F5_SPEED
-    description: "F5-TTS speech speed multiplier (default: 1.0)"
-    prompt: "F5-TTS speed (default: 1.0)"
-    password: false
-  - name: AURICLE_F5_REF_WAV
-    description: "Path to reference WAV for F5 voice cloning (5-15s, 24kHz mono). Both REF_WAV and REF_TXT must be set to enable cloning; omit both to use the bundled default voice."
-    prompt: "F5-TTS reference WAV path"
-    password: false
-  - name: AURICLE_F5_REF_TXT
-    description: "Path to a text file containing the exact transcript of AURICLE_F5_REF_WAV. Both must be set to enable cloning."
-    prompt: "F5-TTS reference transcript path"
-    password: false
-  - name: AURICLE_KOKORO_PYTHON
-    description: "Path to a Python binary in the kokoro-tts venv with kokoro installed (required for kokoro-tts backend)"
-    prompt: "Kokoro-TTS Python path (e.g. ~/kokoro-venv/bin/python)"
-    password: false
-  - name: AURICLE_KOKORO_VOICE
-    description: "Kokoro voice name (default: af_heart). af_*/am_* = American English, bf_*/bm_* = British English."
-    prompt: "Kokoro voice (default: af_heart)"
-    password: false
-  - name: AURICLE_OWW_WAKEWORD_MODEL_PATH
-    description: "Path to the openWakeWord .tflite wakeword model file"
-    prompt: "OWW wakeword model path (.onnx)"
-    password: false
-  - name: AURICLE_OWW_MELSPEC_MODEL_PATH
-    description: "Path to the openWakeWord melspectrogram.onnx preprocessor"
-    prompt: "OWW melspectrogram model path"
-    password: false
-  - name: AURICLE_OWW_EMBEDDING_MODEL_PATH
-    description: "Path to the openWakeWord embedding_model.onnx preprocessor"
-    prompt: "OWW embedding model path"
-    password: false
-  - name: AURICLE_SLEEP_TIMEOUT
-    description: "Seconds of IDLE silence before auto-sleep (default: 60)"
-    prompt: "Auto-sleep timeout (seconds)"
-    password: false
-  - name: AURICLE_SLEEP_WAKE_SENSITIVITY
-    description: "Flux multiplier over baseline to wake from sleep; lower = more sensitive (default: 3.0)"
-    prompt: "Sleep wake sensitivity"
-    password: false
-  - name: AURICLE_SLEEP_FLUX_THRESHOLD
-    description: "Normalized flux EMA cutoff for 'quiet' classification (default: 0.02)"
-    prompt: "Sleep flux threshold"
     password: false
   - name: AURICLE_SESSION_AUTO_CLEAR
     description: "Clear session history after a period of inactivity (default: true)"
@@ -116,20 +25,4 @@ optional_env:
   - name: AURICLE_SESSION_CLEAR_AFTER
     description: "Seconds of inactivity before session history is cleared (default: 3600)"
     prompt: "Session clear-after duration (seconds)"
-    password: false
-  - name: AURICLE_AUDIO_INPUT
-    description: "Audio input backend: arecord (default, Linux/ALSA) or sounddevice (cross-platform)"
-    prompt: "Audio input backend (arecord or sounddevice)"
-    password: false
-  - name: AURICLE_AUDIO_OUTPUT
-    description: "Audio output backend: aplay (default, Linux/ALSA) or sounddevice (cross-platform)"
-    prompt: "Audio output backend (aplay or sounddevice)"
-    password: false
-  - name: AURICLE_SD_INPUT_DEVICE
-    description: "sounddevice input device — integer index or name substring (default: system default)"
-    prompt: "sounddevice input device index or name"
-    password: false
-  - name: AURICLE_SD_OUTPUT_DEVICE
-    description: "sounddevice output device — integer index or name substring (default: system default)"
-    prompt: "sounddevice output device index or name"
     password: false

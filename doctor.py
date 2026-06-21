@@ -1,719 +1,105 @@
 #!/usr/bin/env python3
-"""Auricle doctor — standalone diagnostic for hermes-auricle.
+"""hermes-auricle connector doctor — checks that the connector can reach auricle-engine.
 
 Run from anywhere:
     python /path/to/hermes-auricle/doctor.py
+
+For audio pipeline diagnostics (STT, TTS, mic, speaker, models), run the
+doctor in the auricle-engine repo instead.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
-import wave
 from pathlib import Path
 
 _PLUGIN_DIR = Path(__file__).parent
 sys.path.insert(0, str(_PLUGIN_DIR))
 
-from consts import (
-    APLAY_BIN,
-    ALL_ASSETS,
-    ASSET_NOTIFY,
-    DEFAULT_AUDIO_INPUT,
-    DEFAULT_AUDIO_OUTPUT,
-    DEFAULT_MIC_DEVICE,
-    DEFAULT_OWW_EMBEDDING_MODEL_PATH,
-    DEFAULT_OWW_MELSPEC_MODEL_PATH,
-    DEFAULT_OWW_WAKEWORD_MODEL_PATH,
-    DEFAULT_SD_INPUT_DEVICE,
-    DEFAULT_SD_OUTPUT_DEVICE,
-    DEFAULT_SPEAKER_DEVICE,
-    DEFAULT_STT_BACKEND,
-    DEFAULT_TTS_BACKEND,
-    DEFAULT_VOSK_MODEL_PATH,
-    DOCTOR_MIC_SILENCE_THRESHOLD,
-    ENV_AUDIO_INPUT,
-    ENV_AUDIO_OUTPUT,
-    ENV_F5_PYTHON,
-    ENV_F5_REF_TXT,
-    ENV_F5_REF_WAV,
-    ENV_KOKORO_PYTHON,
-    ENV_MIC_DEVICE,
-    ENV_OWW_EMBEDDING_MODEL_PATH,
-    ENV_OWW_MELSPEC_MODEL_PATH,
-    ENV_OWW_WAKEWORD_MODEL_PATH,
-    ENV_SD_INPUT_DEVICE,
-    ENV_SD_OUTPUT_DEVICE,
-    ENV_SPEAKER_DEVICE,
-    ENV_STT_BACKEND,
-    ENV_TTS_BACKEND,
-    ENV_VOSK_MODEL_PATH,
-    ENV_WHISPER_PYTHON,
-    FFMPEG_BIN,
-    SAMPLE_RATE,
-)
+from consts import DEFAULT_ENGINE_WS_URL, ENV_ENGINE_WS_URL
 
-# ── ANSI output ───────────────────────────────────────────────────────────────
+# ── ANSI output ────────────────────────────────────────────────────────────
 
-_G, _Y, _R, _C, _B, _D, _X = (
-    "\033[32m", "\033[33m", "\033[31m", "\033[36m",
-    "\033[1m",  "\033[2m",  "\033[0m",
-)
+_G, _Y, _R, _X = "\033[32m", "\033[33m", "\033[31m", "\033[0m"
+
+def _ok(msg: str)   -> None: print(f"  {_G}✓{_X}  {msg}")
+def _warn(msg: str) -> None: print(f"  {_Y}⚠{_X}  {msg}")
+def _fail(msg: str) -> None: print(f"  {_R}✗{_X}  {msg}")
+def _hdr(msg: str)  -> None: print(f"\n{msg}")
+
+_failures: list[str] = []
+
+def _check(label: str, ok: bool, detail: str = "") -> None:
+    if ok:
+        _ok(label + (f" — {detail}" if detail else ""))
+    else:
+        _fail(label + (f" — {detail}" if detail else ""))
+        _failures.append(label)
 
 
-def _c(s: str, *codes: str) -> str:
-    return ("".join(codes) + s + _X) if sys.stdout.isatty() else s
+# ── A: Python dependencies ─────────────────────────────────────────────────
+
+_hdr("A. Python dependencies")
+
+try:
+    import websockets
+    _ok(f"websockets ({websockets.__version__})")
+except ImportError:
+    _fail("websockets not found — pip install websockets")
+    _failures.append("websockets")
+
+# ── B: Engine reachability ─────────────────────────────────────────────────
+
+_hdr("B. Engine reachability")
+
+engine_url = os.getenv(ENV_ENGINE_WS_URL, DEFAULT_ENGINE_WS_URL)
+print(f"  Engine URL: {engine_url}")
 
 
-def _ok(t: str, d: str = "") -> None:
-    print(f"  {_c('✓', _G)} {t}" + (f" {_c(d, _D)}" if d else ""))
-
-
-def _warn(t: str, d: str = "") -> None:
-    print(f"  {_c('⚠', _Y)} {t}" + (f" {_c(d, _D)}" if d else ""))
-
-
-def _fail(t: str, d: str = "", issues: list[str] | None = None) -> None:
-    print(f"  {_c('✗', _R)} {t}" + (f" {_c(d, _D)}" if d else ""))
-    if issues is not None:
-        issues.append(t + (f" — {d}" if d else ""))
-
-
-def _info(t: str) -> None:
-    print(f"    {_c('→', _C)} {t}")
-
-
-def _sec(title: str) -> None:
-    print()
-    print(_c(f"◆ {title}", _C, _B))
-
-
-# ── gateway detection ────────────────────────────────────────────────────────
-
-def _gateway_is_running() -> bool:
-    """Return True if the hermes gateway process is alive.
-
-    Reads $HERMES_HOME/gateway.pid (JSON dict with 'pid' key, or bare int)
-    and probes the PID with kill(pid, 0) — no hermes imports needed.
-    """
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    pid_path = hermes_home / "gateway.pid"
-    if not pid_path.exists():
-        return False
+async def _probe_engine(url: str) -> tuple[bool, str]:
     try:
-        import json as _json
-        raw = pid_path.read_text().strip()
-        payload = _json.loads(raw)
-        pid = int(payload["pid"] if isinstance(payload, dict) else payload)
-    except Exception:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # process exists, we just can't signal it
-    except OSError:
-        return False
-
-
-# ── .env loading ──────────────────────────────────────────────────────────────
-
-def _load_env() -> tuple[Path | None, str]:
-    """Load $HERMES_HOME/.env using the same approach as hermes.
-
-    Uses python-dotenv with override=True so the file wins over stale shell
-    exports, and falls back to latin-1 if the file is not valid UTF-8.
-    Returns (loaded_path, error_detail); loaded_path is None when not loaded.
-    """
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    env_path = hermes_home / ".env"
-    if not env_path.exists():
-        return None, f"not found at {env_path}"
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return None, "python-dotenv not installed"
-    try:
-        load_dotenv(dotenv_path=env_path, override=True, encoding="utf-8")
-    except UnicodeDecodeError:
-        try:
-            load_dotenv(dotenv_path=env_path, override=True, encoding="latin-1")
-        except Exception as e:
-            return None, str(e)
-    except Exception as e:
-        return None, str(e)
-    return env_path, ""
-
-
-# ── sounddevice device resolution ─────────────────────────────────────────────
-
-def _sd_device(env_var: str, default: str) -> int | str | None:
-    """Resolve an AURICLE_SD_*_DEVICE env var to a sounddevice specifier."""
-    val = os.getenv(env_var, default).strip()
-    if not val:
-        return None  # sounddevice will use system default
-    try:
-        return int(val)
-    except ValueError:
-        return val  # name substring — sounddevice handles it
-
-
-# ── peak amplitude helper ─────────────────────────────────────────────────────
-
-def _report_peak(peak: int) -> None:
-    if peak == 0:
-        _warn("Mic device opened", "all-zero samples — hardware mute or driver issue")
-    elif peak < DOCTOR_MIC_SILENCE_THRESHOLD:
-        _warn(
-            "Mic device opened, low signal",
-            f"peak {peak}/32767 — may be muted or room is silent",
-        )
-    else:
-        _ok("Mic device OK", f"peak {peak}/32767")
-
-
-# ── section A: environment ────────────────────────────────────────────────────
-
-def _check_env() -> None:
-    _sec("Environment")
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    loaded, err = _load_env()
-    if loaded:
-        _ok(".env loaded", f"({loaded})")
-    elif "not found" in err:
-        _warn(".env not found", f"({hermes_home / '.env'}) — vars must already be set in shell")
-    else:
-        _warn(".env not loaded", f"({err})")
-
-
-# ── section B: active configuration ──────────────────────────────────────────
-
-def _check_config(issues: list[str]) -> tuple[str, str, str, str, str, str]:
-    """Validate and display active config.
-    Returns (stt_backend, tts_backend, audio_in, audio_out, mic_device, spk_device)."""
-    _sec("Active Configuration")
-
-    stt_backend = os.getenv(ENV_STT_BACKEND, DEFAULT_STT_BACKEND).lower()
-    tts_backend = os.getenv(ENV_TTS_BACKEND, DEFAULT_TTS_BACKEND).lower()
-    audio_in    = os.getenv(ENV_AUDIO_INPUT,  DEFAULT_AUDIO_INPUT).lower()
-    audio_out   = os.getenv(ENV_AUDIO_OUTPUT, DEFAULT_AUDIO_OUTPUT).lower()
-    mic_device  = os.getenv(ENV_MIC_DEVICE,   DEFAULT_MIC_DEVICE)
-    spk_device  = os.getenv(ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE)
-
-    if stt_backend in ("vosk", "whisper"):
-        _ok(f"STT backend:  {stt_backend}")
-    else:
-        _fail(f"STT backend: {stt_backend!r}", "must be 'vosk' or 'whisper'", issues)
-        stt_backend = DEFAULT_STT_BACKEND
-
-    if tts_backend in ("edge-tts", "f5-tts", "kokoro-tts"):
-        _ok(f"TTS backend:  {tts_backend}")
-    else:
-        _fail(f"TTS backend: {tts_backend!r}", "must be 'edge-tts', 'f5-tts', or 'kokoro-tts'", issues)
-        tts_backend = DEFAULT_TTS_BACKEND
-
-    if audio_in in ("arecord", "sounddevice"):
-        _ok(f"Audio input:  {audio_in}")
-    else:
-        _fail(f"Audio input: {audio_in!r}", "must be 'arecord' or 'sounddevice'", issues)
-        audio_in = DEFAULT_AUDIO_INPUT
-
-    if audio_out in ("aplay", "sounddevice"):
-        _ok(f"Audio output: {audio_out}")
-    else:
-        _fail(f"Audio output: {audio_out!r}", "must be 'aplay' or 'sounddevice'", issues)
-        audio_out = DEFAULT_AUDIO_OUTPUT
-
-    mic_note = " (default)" if mic_device == DEFAULT_MIC_DEVICE else ""
-    spk_note = " (default)" if spk_device == DEFAULT_SPEAKER_DEVICE else ""
-    _info(f"Mic device:     {mic_device}{mic_note}")
-    _info(f"Speaker device: {spk_device}{spk_note}")
-
-    return stt_backend, tts_backend, audio_in, audio_out, mic_device, spk_device
-
-
-# ── section C: python dependencies ───────────────────────────────────────────
-
-def _check_python_deps(issues: list[str], stt_backend: str, tts_backend: str,
-                       audio_in: str, audio_out: str) -> None:
-    _sec("Python Dependencies")
-
-    for pkg, label, pip_hint in [
-        ("openwakeword", "openwakeword", "openwakeword"),
-        ("numpy",        "numpy",        "numpy"),
-    ]:
-        try:
-            __import__(pkg)
-            _ok(label)
-        except ImportError:
-            _fail(label, f"pip install {pip_hint}", issues)
-
-    if tts_backend == "edge-tts":
-        try:
-            __import__("edge_tts")
-            _ok("edge-tts")
-        except ImportError:
-            _fail("edge-tts", "pip install edge-tts", issues)
-    else:
-        _info("edge-tts: skipped (non-edge backend)")
-
-    if stt_backend == "vosk":
-        try:
-            __import__("vosk")
-            _ok("vosk")
-        except ImportError:
-            _fail("vosk", "pip install vosk", issues)
-    else:
-        _info("vosk: skipped (whisper backend)")
-
-    if audio_in == "sounddevice" or audio_out == "sounddevice":
-        try:
-            __import__("sounddevice")
-            _ok("sounddevice")
-        except ImportError:
-            _fail("sounddevice", "pip install sounddevice", issues)
-    else:
-        _info("sounddevice: skipped (arecord/aplay backend)")
-
-
-# ── section D: system binaries ────────────────────────────────────────────────
-
-def _check_binaries(issues: list[str], audio_in: str, audio_out: str) -> dict[str, bool]:
-    _sec("System Binaries")
-    found: dict[str, bool] = {}
-
-    if audio_in == "arecord":
-        if shutil.which("arecord"):
-            _ok("arecord")
-            found["arecord"] = True
-        else:
-            _fail("arecord", "not found on PATH — install alsa-utils", issues)
-            found["arecord"] = False
-
-    if audio_out == "aplay":
-        for name, hint in [(APLAY_BIN, "alsa-utils"), (FFMPEG_BIN, "ffmpeg")]:
-            if shutil.which(name):
-                _ok(name)
-                found[name] = True
-            else:
-                _fail(name, f"not found on PATH — install {hint}", issues)
-                found[name] = False
-
-    if not found:
-        _info("No ALSA binaries required by current backend")
-
-    return found
-
-
-# ── section E: model & asset files ───────────────────────────────────────────
-
-def _check_files(issues: list[str], stt_backend: str) -> None:
-    _sec("Model & Asset Files")
-
-    for env, default, label in [
-        (ENV_OWW_WAKEWORD_MODEL_PATH,  DEFAULT_OWW_WAKEWORD_MODEL_PATH,  "OWW wakeword model"),
-        (ENV_OWW_MELSPEC_MODEL_PATH,   DEFAULT_OWW_MELSPEC_MODEL_PATH,   "OWW melspec model"),
-        (ENV_OWW_EMBEDDING_MODEL_PATH, DEFAULT_OWW_EMBEDDING_MODEL_PATH, "OWW embedding model"),
-    ]:
-        p = Path(os.path.expanduser(os.getenv(env, default)))
-        if p.exists():
-            _ok(label, f"({p.name})")
-        else:
-            _fail(label, f"not found: {p}", issues)
-
-    if stt_backend == "vosk":
-        vosk_path = Path(os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH)))
-        if not vosk_path.exists():
-            _fail("Vosk model", f"not found: {vosk_path}", issues)
-        elif not vosk_path.is_dir():
-            _fail("Vosk model", f"not a directory: {vosk_path}", issues)
-        elif (vosk_path / "conf").is_dir() and (vosk_path / "am").is_dir():
-            _ok("Vosk model", f"({vosk_path.name})")
-        else:
-            _warn("Vosk model directory exists but looks incomplete", "missing conf/ or am/ — download may be partial")
-    else:
-        _info("Vosk model: skipped (whisper backend)")
-
-    for asset in ALL_ASSETS:
-        if asset.exists():
-            _ok(f"Asset: {asset.name}")
-        else:
-            _fail(f"Asset: {asset.name}", f"not found: {asset}", issues)
-
-
-# ── section F: whisper shim ───────────────────────────────────────────────────
-
-def _check_whisper_shim(issues: list[str]) -> None:
-    _sec("Whisper Shim")
-
-    python_path = os.getenv(ENV_WHISPER_PYTHON, "").strip()
-    if not python_path:
-        _fail("AURICLE_WHISPER_PYTHON", "not set", issues)
-        return
-
-    p = Path(python_path)
-    if not p.exists():
-        _fail("Whisper Python binary", f"not found: {p}", issues)
-        return
-    if not os.access(p, os.X_OK):
-        _fail("Whisper Python binary", f"not executable: {p}", issues)
-        return
-    _ok("Whisper Python binary", f"({p})")
-
-    for pkg in ("torch", "transformers", "webrtcvad"):
-        try:
-            result = subprocess.run(
-                [python_path, "-c", f"import {pkg}"],
-                capture_output=True,
-                timeout=20,
-            )
-            if result.returncode == 0:
-                _ok(f"Whisper venv: {pkg}")
-            else:
-                stderr = result.stderr.decode("utf-8", errors="replace").strip()
-                _fail(f"Whisper venv: {pkg}", stderr or "import failed", issues)
-        except subprocess.TimeoutExpired:
-            _fail(f"Whisper venv: {pkg}", "import check timed out (>20s)", issues)
-        except Exception as e:
-            _fail(f"Whisper venv: {pkg}", str(e), issues)
-
-    # Probe that subprocess pipe creation works with the same config as the real worker.
-    # Catches OS-level Popen failures (e.g. ConPTY stderr inheritance on Windows).
-    try:
-        probe = subprocess.Popen(
-            [python_path, "-c", "import sys; sys.stdout.write('ok\\n'); sys.stdout.flush()"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-        out, _ = probe.communicate(timeout=5)
-        if out.strip() == b"ok":
-            _ok("Whisper subprocess pipe probe")
-        else:
-            _fail("Whisper subprocess pipe probe", f"unexpected output: {out!r}", issues)
-    except subprocess.TimeoutExpired:
-        _fail("Whisper subprocess pipe probe", "timed out", issues)
-    except Exception as e:
-        _fail("Whisper subprocess pipe probe", str(e), issues)
-
-
-# ── section G: F5-TTS shim ───────────────────────────────────────────────────
-
-def _check_f5_shim(issues: list[str]) -> None:
-    _sec("F5-TTS Shim")
-
-    python_path = os.getenv(ENV_F5_PYTHON, "").strip()
-    if not python_path:
-        _fail("AURICLE_F5_PYTHON", "not set", issues)
-        return
-
-    p = Path(python_path)
-    if not p.exists():
-        _fail("F5 Python binary", f"not found: {p}", issues)
-        return
-    if not os.access(p, os.X_OK):
-        _fail("F5 Python binary", f"not executable: {p}", issues)
-        return
-    _ok("F5 Python binary", f"({p})")
-
-    for pkg in ("f5_tts", "numpy", "torch"):
-        try:
-            result = subprocess.run(
-                [python_path, "-c", f"import {pkg}"],
-                capture_output=True,
-                timeout=30,
-            )
-            if result.returncode == 0:
-                _ok(f"F5 venv: {pkg}")
-            else:
-                stderr = result.stderr.decode("utf-8", errors="replace").strip()
-                _fail(f"F5 venv: {pkg}", stderr or "import failed", issues)
-        except subprocess.TimeoutExpired:
-            _fail(f"F5 venv: {pkg}", "import check timed out (>30s)", issues)
-        except Exception as e:
-            _fail(f"F5 venv: {pkg}", str(e), issues)
-
-    # Probe that subprocess pipe creation works (catches OS-level Popen failures).
-    try:
-        probe = subprocess.Popen(
-            [python_path, "-c", "import sys; sys.stdout.buffer.write(b'ok\\n'); sys.stdout.buffer.flush()"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-        out, _ = probe.communicate(timeout=5)
-        if out.strip() == b"ok":
-            _ok("F5 subprocess pipe probe")
-        else:
-            _fail("F5 subprocess pipe probe", f"unexpected output: {out!r}", issues)
-    except subprocess.TimeoutExpired:
-        _fail("F5 subprocess pipe probe", "timed out", issues)
-    except Exception as e:
-        _fail("F5 subprocess pipe probe", str(e), issues)
-
-    # Check ref file paths if configured.
-    ref_wav = os.path.expanduser(os.getenv(ENV_F5_REF_WAV, "").strip())
-    ref_txt = os.path.expanduser(os.getenv(ENV_F5_REF_TXT, "").strip())
-    have_wav = bool(ref_wav)
-    have_txt = bool(ref_txt)
-
-    if have_wav and have_txt:
-        for path, label in [(ref_wav, "AURICLE_F5_REF_WAV"), (ref_txt, "AURICLE_F5_REF_TXT")]:
-            if Path(path).exists():
-                _ok(label, f"({path})")
-            else:
-                _fail(label, f"file not found: {path}", issues)
-    elif have_wav or have_txt:
-        _warn(
-            "F5 ref config",
-            "only one of AURICLE_F5_REF_WAV / AURICLE_F5_REF_TXT is set; "
-            "both are required for cloning — will fall back to bundled voice",
-        )
-    else:
-        _info("F5 ref: not configured — will use bundled voice")
-
-
-# ── section H: Kokoro-TTS shim ───────────────────────────────────────────────
-
-def _check_kokoro_shim(issues: list[str]) -> None:
-    _sec("Kokoro-TTS Shim")
-
-    python_path = os.getenv(ENV_KOKORO_PYTHON, "").strip()
-    if not python_path:
-        _fail("AURICLE_KOKORO_PYTHON", "not set", issues)
-        return
-
-    p = Path(python_path)
-    if not p.exists():
-        _fail("Kokoro Python binary", f"not found: {p}", issues)
-        return
-    if not os.access(p, os.X_OK):
-        _fail("Kokoro Python binary", f"not executable: {p}", issues)
-        return
-    _ok("Kokoro Python binary", f"({p})")
-
-    for pkg in ("kokoro", "numpy"):
-        try:
-            result = subprocess.run(
-                [python_path, "-c", f"import {pkg}"],
-                capture_output=True,
-                timeout=30,
-            )
-            if result.returncode == 0:
-                _ok(f"Kokoro venv: {pkg}")
-            else:
-                stderr = result.stderr.decode("utf-8", errors="replace").strip()
-                _fail(f"Kokoro venv: {pkg}", stderr or "import failed", issues)
-        except subprocess.TimeoutExpired:
-            _fail(f"Kokoro venv: {pkg}", "import check timed out (>30s)", issues)
-        except Exception as e:
-            _fail(f"Kokoro venv: {pkg}", str(e), issues)
-
-    # espeak-ng is the phonemizer backend — must be on the system PATH.
-    if shutil.which("espeak-ng"):
-        _ok("espeak-ng (phonemizer backend)")
-    else:
-        _fail("espeak-ng", "not found on PATH — required by kokoro; install with: apt-get install espeak-ng", issues)
-
-    # Probe that subprocess pipe creation works (catches OS-level Popen failures).
-    try:
-        probe = subprocess.Popen(
-            [python_path, "-c", "import sys; sys.stdout.buffer.write(b'ok\\n'); sys.stdout.buffer.flush()"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-        out, _ = probe.communicate(timeout=5)
-        if out.strip() == b"ok":
-            _ok("Kokoro subprocess pipe probe")
-        else:
-            _fail("Kokoro subprocess pipe probe", f"unexpected output: {out!r}", issues)
-    except subprocess.TimeoutExpired:
-        _fail("Kokoro subprocess pipe probe", "timed out", issues)
-    except Exception as e:
-        _fail("Kokoro subprocess pipe probe", str(e), issues)
-
-
-# ── section I: audio devices ──────────────────────────────────────────────────
-
-def _check_audio_devices(
-    issues: list[str],
-    audio_in: str,
-    audio_out: str,
-    mic_device: str,
-    spk_device: str,
-    binaries_ok: dict[str, bool],
-) -> None:
-    _sec("Audio Devices")
-
-    if _gateway_is_running():
-        _warn(
-            "Hermes gateway is running",
-            "audio device tests may fail with EBUSY — stop the gateway for accurate results",
-        )
-
-    if audio_in == "arecord":
-        if not binaries_ok.get("arecord", False):
-            _warn("Mic capture: skipped", "(arecord not found — see System Binaries above)")
-        else:
-            _check_mic_arecord(mic_device, issues)
-    else:
-        _check_mic_sounddevice(issues)
-
-    if audio_out == "aplay":
-        if not binaries_ok.get(APLAY_BIN, False):
-            _warn("Speaker playback: skipped", "(aplay not found — see System Binaries above)")
-        else:
-            _check_speaker_aplay(spk_device, issues)
-    else:
-        _check_speaker_sounddevice(issues)
-
-
-def _check_mic_arecord(device: str, issues: list[str]) -> None:
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    tmp.close()
-    try:
-        result = subprocess.run(
-            ["arecord", "-D", device, "-d", "1", "-f", "S16_LE", "-r", "16000", "-c", "1", "-q", tmp.name],
-            capture_output=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            _fail("Mic capture (arecord)", stderr or "non-zero exit", issues)
-            return
-
-        try:
-            import numpy as np
-            with wave.open(tmp.name, "rb") as wf:
-                raw = wf.readframes(wf.getnframes())
-            samples = np.frombuffer(raw, dtype=np.int16)
-            _report_peak(int(np.max(np.abs(samples))) if samples.size else 0)
-        except ImportError:
-            _ok("Mic capture (arecord)", "(numpy unavailable — amplitude check skipped)")
-        except Exception as e:
-            _warn("Mic capture succeeded", f"amplitude check failed: {e}")
-
-    except subprocess.TimeoutExpired:
-        _fail("Mic capture (arecord)", "timed out (>5s)", issues)
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
-
-
-def _check_speaker_aplay(device: str, issues: list[str]) -> None:
-    result = subprocess.run(
-        [APLAY_BIN, "-D", device, "-q", str(ASSET_NOTIFY)],
-        capture_output=True,
-        timeout=10,
+        import websockets as ws_mod
+        async with ws_mod.connect(url, open_timeout=5) as ws:
+            raw = await asyncio.wait_for(ws.recv(), timeout=5)
+            msg = json.loads(raw)
+            if msg.get("t") == "ready":
+                return True, f"client_id={msg.get('client_id')}"
+            return False, f"unexpected message: {msg}"
+    except Exception as exc:
+        return False, str(exc)
+
+
+try:
+    ok, detail = asyncio.run(_probe_engine(engine_url))
+    _check("auricle-engine reachable", ok, detail)
+except Exception as exc:
+    _check("auricle-engine reachable", False, str(exc))
+
+# ── C: Classifier sanity ───────────────────────────────────────────────────
+
+_hdr("C. SystemMessageClassifier")
+
+try:
+    from classifier import SystemMessageClassifier, Classification
+    clf = SystemMessageClassifier()
+    result = clf.classify("Hello, how are you?")
+    _check(
+        "SystemMessageClassifier instantiates and classifies",
+        result == Classification.AGENT_RESPONSE,
+        f"verdict={result.name}",
     )
-    if result.returncode == 0:
-        _ok("Speaker playback (aplay)", "(ASSET_NOTIFY played)")
-    else:
-        stderr = result.stderr.decode("utf-8", errors="replace").strip()
-        _fail("Speaker playback (aplay)", stderr or "non-zero exit", issues)
+except Exception as exc:
+    _check("SystemMessageClassifier", False, str(exc))
 
+# ── Summary ────────────────────────────────────────────────────────────────
 
-def _check_mic_sounddevice(issues: list[str]) -> None:
-    try:
-        import sounddevice as sd
-        import numpy as np
-    except ImportError:
-        _warn("Mic capture (sounddevice): skipped", "(sounddevice or numpy not importable)")
-        return
-
-    device = _sd_device(ENV_SD_INPUT_DEVICE, DEFAULT_SD_INPUT_DEVICE)
-    _info(f"sounddevice input device: {repr(device) if device is not None else 'system default'}")
-
-    try:
-        recording = sd.rec(
-            int(1.0 * SAMPLE_RATE),
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="int16",
-            device=device,
-        )
-        sd.wait()
-        _report_peak(int(np.max(np.abs(recording))))
-    except Exception as e:
-        _fail("Mic capture (sounddevice)", str(e), issues)
-
-
-def _check_speaker_sounddevice(issues: list[str]) -> None:
-    try:
-        import sounddevice as sd
-        import numpy as np
-    except ImportError:
-        _warn("Speaker playback (sounddevice): skipped", "(sounddevice or numpy not importable)")
-        return
-
-    device = _sd_device(ENV_SD_OUTPUT_DEVICE, DEFAULT_SD_OUTPUT_DEVICE)
-    _info(f"sounddevice output device: {repr(device) if device is not None else 'system default'}")
-
-    try:
-        with wave.open(str(ASSET_NOTIFY), "rb") as wf:
-            raw = wf.readframes(wf.getnframes())
-            samplerate = wf.getframerate()
-        samples = np.frombuffer(raw, dtype=np.int16)
-        sd.play(samples, samplerate=samplerate, device=device)
-        sd.wait()
-        _ok("Speaker playback (sounddevice)", "(ASSET_NOTIFY played)")
-    except Exception as e:
-        _fail("Speaker playback (sounddevice)", str(e), issues)
-
-
-# ── entry point ───────────────────────────────────────────────────────────────
-
-def run_doctor() -> int:
-    """Run all checks. Returns 0 if no failures, 1 if any FAIL."""
-    issues: list[str] = []
-
-    print()
-    print(_c("┌─────────────────────────────────────────────────────────┐", _C))
-    print(_c("│              🩺 Auricle Doctor                          │", _C))
-    print(_c("└─────────────────────────────────────────────────────────┘", _C))
-
-    _check_env()
-    stt_backend, tts_backend, audio_in, audio_out, mic_device, spk_device = _check_config(issues)
-    _check_python_deps(issues, stt_backend, tts_backend, audio_in, audio_out)
-    binaries_ok = _check_binaries(issues, audio_in, audio_out)
-    _check_files(issues, stt_backend)
-
-    if stt_backend == "whisper":
-        _check_whisper_shim(issues)
-
-    if tts_backend == "f5-tts":
-        _check_f5_shim(issues)
-
-    if tts_backend == "kokoro-tts":
-        _check_kokoro_shim(issues)
-
-    _check_audio_devices(issues, audio_in, audio_out, mic_device, spk_device, binaries_ok)
-
-    print()
-    if issues:
-        print(_c("─" * 60, _Y))
-        print(_c(f"  Found {len(issues)} issue(s):", _Y, _B))
-        print()
-        for i, issue in enumerate(issues, 1):
-            print(f"  {i}. {issue}")
-        print()
-        return 1
-
-    print(_c("─" * 60, _G))
-    print(_c("  All checks passed.", _G, _B))
-    print()
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(run_doctor())
+print()
+if _failures:
+    print(f"{_R}doctor: {len(_failures)} problem(s) found{_X}")
+    for f in _failures:
+        print(f"  {_R}✗{_X}  {f}")
+    sys.exit(1)
+else:
+    print(f"{_G}doctor: all checks passed{_X}")

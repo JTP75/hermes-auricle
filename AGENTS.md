@@ -1,22 +1,17 @@
 # Hermes Auricle (hermes-auricle) Plugin Agent Reference
 
-Hermes Auricle is a **platform plugin** for NousResearch Hermes Agent. It 
-gives a hermes agent a pure audio interface, including efficient wakeword 
-detection, speech-to-text (STT), and text-to-speech (TTS) capabilities. 
+Hermes Auricle is a **platform plugin** for NousResearch Hermes Agent. It
+connects hermes-agent to a running `auricle-engine` instance over WebSocket,
+providing a voice interface. All audio pipeline logic (wakeword, STT, TTS,
+FSM) lives in the engine; this plugin contains only the thin connector.
 
 ## Documentation Index
 
 | Document | What it covers |
 |----------|---------------|
-| [`README.md`](README.md) | Installation, configuration table (all env vars + defaults), voice commands, how-it-works prose, misinput filtering, message classification, project layout |
-| [`docs/uml/fsm.md`](docs/uml/fsm.md) | Mermaid stateDiagram-v2 of the 7-state FSM with orthogonal `sleeping` / `muted` regions and all transitions labelled |
-| [`docs/uml/class.md`](docs/uml/class.md) | Mermaid classDiagram of the full plugin architecture — namespaces (Core, Ingress, Egress, Support), relationships, and critical method signatures |
-| [`docs/rev1/design-rev1.md`](docs/rev1/design-rev1.md) | Authoritative design document for the current revision; compiled from the feature-set and decision Q&A sessions |
-| [`docs/rev1/feature-set-rev1.md`](docs/rev1/feature-set-rev1.md) | Enumerated feature set that drove the rev1 implementation |
-| [`docs/rev1/plugin-system-research.md`](docs/rev1/plugin-system-research.md) | Notes on how the hermes platform plugin system works (entry points, registration, config wiring) — written during initial integration |
-| [`docs/rev1/setup-log-rev1.md`](docs/rev1/setup-log-rev1.md) | Installation and integration log for rev1 on the Pi (dependency alignment, venv setup) |
-| [`docs/rev0/blueprint-salvage.md`](docs/rev0/blueprint-salvage.md) | Usable patterns extracted from the original rev0 blueprints; stale pieces dropped; superseded by `design-rev1.md` |
-| [`doctor.py`](doctor.py) | Standalone diagnostic script — checks Python deps, system binaries, model files, whisper shim (if configured), and audio devices (live mic capture + speaker playback via `ASSET_NOTIFY`). Must be run with the hermes venv Python and with the gateway stopped. Intended as a setup verifier and future CI gate. |
+| [`README.md`](README.md) | Installation, configuration, project layout |
+| [`doctor.py`](doctor.py) | Connector diagnostic — checks websockets dep and engine reachability |
+| `auricle-engine/docs/protocol.md` | WebSocket protocol spec (engine repo) |
 
 ## Required behavior for agents 
 
@@ -118,33 +113,26 @@ New features additions must be documented with at least one line in `README.md`.
 Patches and bug fixes should only be documented if they contradict what is in `README.md`.
 The amount of documentation for an addition should reflect the scale code change.
 
-### Rule 5 — Keep `doctor.py` in sync with the runtime
+### Rule 5 — Keep `doctor.py` in sync with the connector
 
-When adding any of the following, add the corresponding check to `doctor.py`:
-- A new Python dependency (import check in section C)
-- A new model file or asset path (file-existence check in section E)
-- A new required system binary (section D)
-- A new env var that controls the audio device path or STT/TTS backend (section B or G)
-
-Constants used only by the doctor must use the `DOCTOR_` prefix and a `# ── Doctor (doctor.py only)` category comment in `consts.py`. They do **not** need a `plugin.yaml` entry — they are not runtime config and are never read from the environment.
+When adding a new connector-side Python dependency or env var, add the
+corresponding check to `doctor.py`. Audio/model/binary checks belong in the
+engine's `doctor.py`, not here.
 
 ## Known Gotchas
 
-Integration-level surprises that aren't obvious from the code alone.
+### Gotcha 1 — New connector env vars must be declared in `plugin.yaml`
 
-### Gotcha 1 — New env vars must be declared in `plugin.yaml`
+Every `AURICLE_*` env var added to `consts.py` needs a matching entry in
+`plugin.yaml` under `optional_env`. Without it, hermes setup UI and
+`hermes plugins info` silently omit the var.
 
-Every env var introduced in `consts.py` must have a corresponding entry in `plugin.yaml` under `optional_env` (or `requires_env` if mandatory).
+Engine env vars (`AURICLE_MIC_DEVICE`, `AURICLE_STT_BACKEND`, etc.) are
+**not** declared here — they are engine config and the engine reads them
+independently.
 
-**Why:** Hermes reads `optional_env` from `plugin.yaml` to populate its setup UI and the known-keys set used for `.env` file sanitization. An undeclared var is invisible to `hermes setup` and won't be interactively configurable. It also won't appear in `hermes plugins info` output.
+### Gotcha 2 — Audio logic belongs in auricle-engine, not here
 
-Note: hermes loads **all** vars from `~/.hermes/.env` unconditionally — missing `optional_env` does not prevent the var from reaching `os.getenv()`. The failure mode is silent: setup and status tooling silently omits the var, which makes misconfiguration hard to diagnose.
-
-**How to apply:** For every new `ENV_*` constant added to `consts.py`, add a matching block to `plugin.yaml`:
-```yaml
-optional_env:
-  - name: AURICLE_MY_NEW_VAR
-    description: "What it controls and its default"
-    prompt: "Short label for hermes setup"
-    password: false
-```
+This connector has no audio pipeline. Do not add imports of `vosk`,
+`openwakeword`, `edge_tts`, `sounddevice`, or similar audio deps. If you
+find yourself writing audio logic, it goes in the engine repo.

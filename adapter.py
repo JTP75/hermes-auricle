@@ -1,12 +1,13 @@
 import asyncio
+import json
 import logging
 import os
-import shutil
-import subprocess
-import threading
+import re
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
+
+import websockets
+import websockets.exceptions
 
 from gateway.config import Platform
 from gateway.platforms.base import (
@@ -16,117 +17,42 @@ from gateway.platforms.base import (
     SendResult,
 )
 
+from .classifier import SystemMessageClassifier
 from .consts import (
-    ALL_ASSETS,
-    APLAY_BIN,
-    AUDIO_CHUNK_BYTES,
-    AUDIO_RING_BUFFER_CHUNKS,
-    TTS_ECHO_TAIL_SECONDS,
-    ASSET_NOTIFY,
-    TTS_CLEARED,
-    TTS_STOPPED,
-    TTS_ERROR,
-    TTS_MAX_CHARS,
     CHAT_ID,
-    DEFAULT_ACTIVE_LISTEN_DURATION,
-    DEFAULT_MIC_DEVICE,
-    DEFAULT_SPEAKER_DEVICE,
-    DEFAULT_MUTE,
-    DEFAULT_OWW_EMBEDDING_MODEL_PATH,
-    DEFAULT_OWW_MELSPEC_MODEL_PATH,
-    DEFAULT_OWW_WAKEWORD_MODEL_PATH,
+    DEFAULT_ENGINE_WS_URL,
     DEFAULT_SESSION_AUTO_CLEAR,
     DEFAULT_SESSION_CLEAR_AFTER,
     DEFAULT_SESSION_RESUME,
-    DEFAULT_SLEEP_FLUX_THRESHOLD,
-    DEFAULT_SLEEP_TIMEOUT,
-    DEFAULT_SLEEP_WAKE_SENSITIVITY,
-    DEFAULT_AUDIO_INPUT,
-    DEFAULT_AUDIO_OUTPUT,
-    DEFAULT_SD_INPUT_DEVICE,
-    DEFAULT_SD_OUTPUT_DEVICE,
-    DEFAULT_F5_MODEL,
-    DEFAULT_F5_SPEED,
-    DEFAULT_F5_STEPS,
-    DEFAULT_KOKORO_VOICE,
-    DEFAULT_STT_BACKEND,
-    DEFAULT_TTS_BACKEND,
-    DEFAULT_TTS_VOICE,
-    DEFAULT_VOSK_MODEL_PATH,
-    DEFAULT_WHISPER_MODEL_ID,
-    EDGE_TTS_BIN,
-    FFMPEG_BIN,
-    ENV_ACTIVE_LISTEN_DURATION,
     ENV_ALLOW_ALL_USERS,
     ENV_ALLOWED_USERS,
-    ENV_AUDIO_INPUT,
-    ENV_AUDIO_OUTPUT,
+    ENV_ENGINE_WS_URL,
     ENV_HOME_CHANNEL,
-    ENV_MIC_DEVICE,
-    ENV_SPEAKER_DEVICE,
-    ENV_SD_INPUT_DEVICE,
-    ENV_SD_OUTPUT_DEVICE,
-    ENV_MUTE,
-    ENV_OWW_EMBEDDING_MODEL_PATH,
-    ENV_OWW_MELSPEC_MODEL_PATH,
-    ENV_OWW_WAKEWORD_MODEL_PATH,
     ENV_SESSION_AUTO_CLEAR,
     ENV_SESSION_CLEAR_AFTER,
     ENV_SESSION_RESUME,
-    ENV_SLEEP_FLUX_THRESHOLD,
-    ENV_SLEEP_TIMEOUT,
-    ENV_SLEEP_WAKE_SENSITIVITY,
-    ENV_F5_MODEL,
-    ENV_F5_PYTHON,
-    ENV_F5_REF_TXT,
-    ENV_F5_REF_WAV,
-    ENV_F5_SPEED,
-    ENV_F5_STEPS,
-    ENV_KOKORO_PYTHON,
-    ENV_KOKORO_VOICE,
-    ENV_STT_BACKEND,
-    ENV_TTS_BACKEND,
-    ENV_TTS_VOICE,
-    ENV_VOSK_MODEL_PATH,
-    ENV_WHISPER_MODEL_ID,
-    ENV_WHISPER_PYTHON,
-    OWW_THRESHOLD,
     PLATFORM_HINT,
-    PROACTIVE_PRE_SPEECH_PAUSE,
     RETRY_DELAY_SECONDS,
-    SAMPLE_RATE,
-    SLEEP_EMA_ALPHA,
     STREAM_MESSAGE_ID,
-    _CMD_CLEAR,
-    _CMD_STOP,
+    TTS_MAX_CHARS,
 )
-from .audio_buffer import AudioBuffer
-from .audio_io import (
-    AplayOutput,
-    ArecordInput,
-    AudioInput,
-    AudioOutput,
-    SounddeviceInput,
-    SounddeviceOutput,
-)
-from .classifier import SystemMessageClassifier
-from .egress import EgressController
-from .fsm import FSM, State
-from .ingress import run_ingress_loop
-from .providers import EdgeTTSProvider, F5TTSProvider, KokoroTTSProvider, VoskSTTProvider, WhisperSTTProvider
-from .sleep import SleepDetector
 
 logger = logging.getLogger(__name__)
 
+_MARKDOWN_RE = re.compile(r'[*_`#\[\]()]')
 
-# ── Adapter ────────────────────────────────────────────────────────────────
+
+def _parse_bool(value: str) -> bool:
+    return str(value).lower() in ("1", "true", "yes", "on")
+
 
 class AuricleAdapter(BasePlatformAdapter):
     """
-    hermes-auricle: local voice platform adapter.
+    Thin hermes connector for auricle-engine.
 
-    Ingress: openWakeWord wakeword + vosk STT via shared arecord subprocess.
-    Egress:  sentence-by-sentence edge-tts piped to pw-play.
+    Connects to the auricle-engine WebSocket server, forwards hermes responses
+    as `speak` messages, and dispatches engine utterance events as hermes
+    MessageEvents.
     """
 
     REQUIRES_EDIT_FINALIZE = False
@@ -134,79 +60,25 @@ class AuricleAdapter(BasePlatformAdapter):
     def __init__(self, config) -> None:
         super().__init__(config, Platform("auricle"))
 
-        self._fsm          = FSM()
-        self._barge_in     = asyncio.Event()
-        self._stop_event   = threading.Event()
-        self._audio_buffer = AudioBuffer(AUDIO_RING_BUFFER_CHUNKS, tts_tail_seconds=TTS_ECHO_TAIL_SECONDS)
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws:             Optional[object]       = None
+        self._client_id:      Optional[str]          = None
+        self._receive_task:   Optional[asyncio.Task] = None
+        self._retry_task:     Optional[asyncio.Task] = None
+        self._source         = None
+        self._classifier     = SystemMessageClassifier()
 
-        _backend = os.getenv(ENV_STT_BACKEND, DEFAULT_STT_BACKEND).lower()
-        if _backend == "whisper":
-            self._stt = WhisperSTTProvider(
-                model_id=os.getenv(ENV_WHISPER_MODEL_ID, DEFAULT_WHISPER_MODEL_ID),
-                python_path=os.getenv(ENV_WHISPER_PYTHON, ""),
-                worker_path=os.path.join(os.path.dirname(__file__), "whisper_worker.py"),
-            )
-        else:
-            self._stt = VoskSTTProvider(
-                os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH))
-            )
-        _tts_backend = os.getenv(ENV_TTS_BACKEND, DEFAULT_TTS_BACKEND).lower()
-        if _tts_backend == "f5-tts":
-            self._tts = F5TTSProvider(
-                model=os.getenv(ENV_F5_MODEL, DEFAULT_F5_MODEL),
-                python_path=os.getenv(ENV_F5_PYTHON, ""),
-                worker_path=os.path.join(os.path.dirname(__file__), "f5_worker.py"),
-                steps=int(os.getenv(ENV_F5_STEPS, str(DEFAULT_F5_STEPS))),
-                speed=float(os.getenv(ENV_F5_SPEED, str(DEFAULT_F5_SPEED))),
-                ref_wav=os.path.expanduser(os.getenv(ENV_F5_REF_WAV, "")),
-                ref_txt=os.path.expanduser(os.getenv(ENV_F5_REF_TXT, "")),
-            )
-        elif _tts_backend == "kokoro-tts":
-            self._tts = KokoroTTSProvider(
-                voice=os.getenv(ENV_KOKORO_VOICE, DEFAULT_KOKORO_VOICE),
-                python_path=os.getenv(ENV_KOKORO_PYTHON, ""),
-                worker_path=os.path.join(os.path.dirname(__file__), "kokoro_worker.py"),
-            )
-        else:
-            self._tts = EdgeTTSProvider(os.getenv(ENV_TTS_VOICE, DEFAULT_TTS_VOICE))
-        self._audio_input  = _make_audio_input()
-        self._audio_output = _make_audio_output()
-        self._egress       = EgressController(self._tts, self._barge_in, self._audio_buffer, self._audio_output)
-
-        self._fsm.muted = _parse_bool(os.getenv(ENV_MUTE, str(DEFAULT_MUTE)))
-        self._session_resume = _parse_bool(os.getenv(ENV_SESSION_RESUME, str(DEFAULT_SESSION_RESUME)))
-        self._active_listen_duration = float(
-            os.getenv(ENV_ACTIVE_LISTEN_DURATION, str(DEFAULT_ACTIVE_LISTEN_DURATION))
-        )
-        self._sleep_timeout = float(
-            os.getenv(ENV_SLEEP_TIMEOUT, str(DEFAULT_SLEEP_TIMEOUT))
-        )
-        self._sleep_wake_sensitivity = float(
-            os.getenv(ENV_SLEEP_WAKE_SENSITIVITY, str(DEFAULT_SLEEP_WAKE_SENSITIVITY))
-        )
-        self._sleep_flux_threshold = float(
-            os.getenv(ENV_SLEEP_FLUX_THRESHOLD, str(DEFAULT_SLEEP_FLUX_THRESHOLD))
-        )
-
-        self._session_auto_clear = _parse_bool(
-            os.getenv(ENV_SESSION_AUTO_CLEAR, str(DEFAULT_SESSION_AUTO_CLEAR))
-        )
+        self._engine_ws_url      = os.getenv(ENV_ENGINE_WS_URL, DEFAULT_ENGINE_WS_URL)
+        self._session_resume     = _parse_bool(os.getenv(ENV_SESSION_RESUME, str(DEFAULT_SESSION_RESUME)))
+        self._session_auto_clear = _parse_bool(os.getenv(ENV_SESSION_AUTO_CLEAR, str(DEFAULT_SESSION_AUTO_CLEAR)))
         self._session_clear_after = float(
             os.getenv(ENV_SESSION_CLEAR_AFTER, str(DEFAULT_SESSION_CLEAR_AFTER))
         )
         self._last_dispatch_time: Optional[float] = None
-
-        self._ingress_thread: Optional[threading.Thread]  = None
-        self._retry_task:     Optional[asyncio.Task]      = None
-        self._pending_clear:  bool                        = False
-        self._classifier = SystemMessageClassifier()
-        self._source = None
+        self._pending_clear: bool = False
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     async def connect(self) -> bool:
-        self._loop = asyncio.get_running_loop()
         self._source = self.build_source(
             chat_id=CHAT_ID,
             chat_type="dm",
@@ -214,200 +86,57 @@ class AuricleAdapter(BasePlatformAdapter):
             user_id=CHAT_ID,
             user_name="user",
         )
+        if not self._session_resume:
+            self._pending_clear = True
 
-        success = await asyncio.to_thread(self._connect_real)
-        if success:
-            if not self._session_resume:
-                self._pending_clear = True
+        if await self._connect_ws():
             return True
-
         self._retry_task = asyncio.create_task(self._retry_loop())
         return False
 
-    def _connect_real(self) -> bool:
-        """Synchronous: validate environment, load models, start subprocess and ingress thread."""
-        # Binaries
-        required_binaries = [FFMPEG_BIN]
-        if isinstance(self._tts, EdgeTTSProvider):
-            required_binaries.append(EDGE_TTS_BIN)
-        if os.getenv(ENV_AUDIO_INPUT, DEFAULT_AUDIO_INPUT).lower() == "arecord":
-            required_binaries.append("arecord")
-        if os.getenv(ENV_AUDIO_OUTPUT, DEFAULT_AUDIO_OUTPUT).lower() == "aplay":
-            required_binaries.append(APLAY_BIN)
-        for binary in required_binaries:
-            if not shutil.which(binary):
-                msg = f"Required binary not found on PATH: {binary}"
-                logger.error("[auricle] %s", msg)
-                self._set_fatal_error("missing_binary", msg, retryable=False)
-                return False
-
-        # Audio assets
-        missing = [str(a) for a in ALL_ASSETS if not a.exists()]
-        if missing:
-            msg = f"Missing audio assets: {', '.join(missing)}"
-            logger.error("[auricle] %s", msg)
-            self._set_fatal_error("missing_assets", msg, retryable=False)
-            return False
-
-        # OWW model paths — always required
-        ww_path  = Path(os.path.expanduser(os.getenv(ENV_OWW_WAKEWORD_MODEL_PATH, DEFAULT_OWW_WAKEWORD_MODEL_PATH)))
-        ms_path  = Path(os.path.expanduser(os.getenv(ENV_OWW_MELSPEC_MODEL_PATH, DEFAULT_OWW_MELSPEC_MODEL_PATH)))
-        emb_path = Path(os.path.expanduser(os.getenv(ENV_OWW_EMBEDDING_MODEL_PATH, DEFAULT_OWW_EMBEDDING_MODEL_PATH)))
-
-        for p, label in [(ww_path, "wakeword"), (ms_path, "melspec"), (emb_path, "embedding")]:
-            if not p.exists():
-                msg = f"Model not found ({label}): {p}"
-                logger.error("[auricle] %s", msg)
-                self._set_fatal_error("missing_model", msg, retryable=True)
-                return False
-
-        # Vosk: validate local model path; Whisper: model is downloaded at load time
-        if isinstance(self._stt, VoskSTTProvider):
-            vosk_path = Path(os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH)))
-            if not vosk_path.exists():
-                msg = f"Model not found (vosk): {vosk_path}"
-                logger.error("[auricle] %s", msg)
-                self._set_fatal_error("missing_model", msg, retryable=True)
-                return False
-            self._stt._model_path = str(vosk_path)
-
-        # Load STT
+    async def _connect_ws(self) -> bool:
         try:
-            logger.info("[auricle] loading STT model (%s)", type(self._stt).__name__)
-            self._stt.load()
-        except Exception as exc:
-            msg = f"Failed to load STT model: {exc}"
-            logger.error("[auricle] %s", msg)
-            self._set_fatal_error("model_load_failed", msg, retryable=True)
-            return False
-
-        # Load TTS (worker-backed backends; edge-tts loads lazily per-sentence)
-        if isinstance(self._tts, (F5TTSProvider, KokoroTTSProvider)):
-            try:
-                logger.info("[auricle] loading TTS worker (%s)", type(self._tts).__name__)
-                self._tts.load()
-            except Exception as exc:
-                msg = f"Failed to load TTS worker: {exc}"
-                logger.error("[auricle] %s", msg)
-                self._set_fatal_error("model_load_failed", msg, retryable=True)
+            ws = await websockets.connect(self._engine_ws_url)
+            raw = await asyncio.wait_for(ws.recv(), timeout=10)
+            msg = json.loads(raw)
+            if msg.get("t") != "ready":
+                logger.error("[auricle] unexpected handshake from engine: %r", msg)
+                await ws.close()
                 return False
-
-        # Load OWW
-        try:
-            logger.info("[auricle] loading openWakeWord model: %s", ww_path.name)
-            from openwakeword.model import Model as OWWModel
-            oww = OWWModel(
-                wakeword_models=[str(ww_path)],
-                melspec_model_path=str(ms_path),
-                embedding_model_path=str(emb_path),
-                inference_framework="onnx",
-            )
-            wakeword_key = ww_path.stem
+            self._ws        = ws
+            self._client_id = msg["client_id"]
+            self._receive_task = asyncio.create_task(self._receive_loop())
+            self._mark_connected()
+            logger.info("[auricle] connected to auricle-engine (client_id=%s)", self._client_id)
+            return True
         except Exception as exc:
-            msg = f"Failed to load OWW model: {exc}"
-            logger.error("[auricle] %s", msg)
-            self._set_fatal_error("model_load_failed", msg, retryable=True)
+            logger.warning("[auricle] could not connect to engine at %s: %s", self._engine_ws_url, exc)
             return False
-
-        # Probe mic (arecord only; sounddevice surfaces errors on open())
-        if os.getenv(ENV_AUDIO_INPUT, DEFAULT_AUDIO_INPUT).lower() == "arecord":
-            mic_device = os.getenv(ENV_MIC_DEVICE, DEFAULT_MIC_DEVICE)
-            try:
-                probe = subprocess.run(
-                    ["arecord", "-D", mic_device, "-f", "S16_LE", "-c", "1",
-                     "-r", str(SAMPLE_RATE), "-t", "raw", "-d", "1", "-q"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=3,
-                )
-                # returncode 0 or SIGTERM (-15) both mean the device exists
-                if probe.returncode not in (0, -15):
-                    msg = f"Mic probe failed for {mic_device}: {probe.stderr.decode().strip()}"
-                    logger.error("[auricle] %s", msg)
-                    self._set_fatal_error("mic_unavailable", msg, retryable=True)
-                    return False
-            except subprocess.TimeoutExpired:
-                pass  # captured audio for full duration — device is fine
-
-        # Start audio input
-        self._audio_input.open()
-
-        # Start ingress thread
-        sleep_detector = SleepDetector(
-            timeout_seconds=self._sleep_timeout,
-            sample_rate=SAMPLE_RATE,
-            chunk_bytes=AUDIO_CHUNK_BYTES,
-            flux_threshold=self._sleep_flux_threshold,
-            wake_multiplier=self._sleep_wake_sensitivity,
-            ema_alpha=SLEEP_EMA_ALPHA,
-        )
-        self._stop_event.clear()
-        self._ingress_thread = threading.Thread(
-            target=run_ingress_loop,
-            name="auricle-ingress",
-            daemon=True,
-            kwargs=dict(
-                audio_input=self._audio_input,
-                audio_output=self._audio_output,
-                oww=oww,
-                wakeword_key=wakeword_key,
-                stt_provider=self._stt,
-                egress=self._egress,
-                audio_buffer=self._audio_buffer,
-                fsm=self._fsm,
-                loop=self._loop,
-                dispatch_fn=self._dispatch,
-                stop_event=self._stop_event,
-                active_listen_duration=self._active_listen_duration,
-                oww_threshold=OWW_THRESHOLD,
-                sleep_detector=sleep_detector,
-            ),
-        )
-        self._ingress_thread.start()
-
-        self._fsm.transition(State.IDLE)
-        self._mark_connected()
-        logger.info("[auricle] connected — listening for wakeword")
-        return True
-
-    async def disconnect(self) -> None:
-        logger.info("[auricle] disconnecting")
-
-        if self._retry_task:
-            self._retry_task.cancel()
-            self._retry_task = None
-
-        self._stop_event.set()
-
-        if isinstance(self._stt, WhisperSTTProvider):
-            self._stt.terminate()
-
-        if isinstance(self._tts, (F5TTSProvider, KokoroTTSProvider)):
-            self._tts.terminate()
-
-        self._audio_input.close()
-
-        self._barge_in.set()
-        if self._egress._worker_task:
-            self._egress._worker_task.cancel()
-        self._egress.kill_active()
-
-        if self._ingress_thread and self._ingress_thread.is_alive():
-            self._ingress_thread.join(timeout=3)
-        self._ingress_thread = None
-
-        self._fsm.transition(State.BOOTING)
-        self._mark_disconnected()
 
     async def _retry_loop(self) -> None:
         while True:
             await asyncio.sleep(RETRY_DELAY_SECONDS)
-            logger.info("[auricle] retrying connect…")
-            success = await asyncio.to_thread(self._connect_real)
-            if success:
-                if not self._session_resume:
-                    self._pending_clear = True
+            logger.info("[auricle] retrying engine connection…")
+            if await self._connect_ws():
                 break
 
-    # ── Streaming egress ───────────────────────────────────────────────────
+    async def disconnect(self) -> None:
+        logger.info("[auricle] disconnecting")
+        if self._retry_task:
+            self._retry_task.cancel()
+            self._retry_task = None
+        if self._receive_task:
+            self._receive_task.cancel()
+            self._receive_task = None
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+        self._mark_disconnected()
+
+    # ── Egress ─────────────────────────────────────────────────────────────
 
     async def send(
         self,
@@ -417,30 +146,23 @@ class AuricleAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         logger.info("[auricle] send(): %r", content[:80])
-        if self._fsm.get() in (State.FATAL, State.BOOTING):
-            await self._egress.speak(TTS_ERROR, priority=True)
-            return SendResult(success=False, error="adapter not connected")
+        if self._ws is None:
+            return SendResult(success=False, error="not connected to auricle-engine")
 
         verdict = self._classifier.classify(content)
         if verdict.is_suppression:
             logger.info("[auricle] suppressed (%s): %r", verdict.name, content[:80])
             return SendResult(success=True, message_id=STREAM_MESSAGE_ID)
 
-        proactive = self._fsm.is_idle_for_proactive()
-
-        self._egress.abort()
-        self._egress.reset()
-        self._egress.start_worker()
-
-        if proactive:
-            logger.info("[auricle] proactive message → notify")
-            await self._egress.play_file(ASSET_NOTIFY)
-            await asyncio.sleep(PROACTIVE_PRE_SPEECH_PAUSE)
-
-        self._fsm.transition(State.SPEAKING)
-        await self._egress.process_delta(content, finalize=True)
-        self._fsm.transition_if(State.SPEAKING, State.AWAITING_UTTERANCE)
-        logger.info("[auricle] TTS complete → active-listen window open")
+        try:
+            await self._ws.send(json.dumps({
+                "t":         "speak",
+                "client_id": self._client_id,
+                "text":      content[:TTS_MAX_CHARS],
+            }))
+        except Exception as exc:
+            logger.error("[auricle] failed to send to engine: %s", exc)
+            return SendResult(success=False, error=str(exc))
         return SendResult(success=True, message_id=STREAM_MESSAGE_ID)
 
     async def edit_message(
@@ -451,14 +173,10 @@ class AuricleAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        logger.info("[auricle] edit_message(finalize=%s) ignored: send() already finalized", finalize)
         return SendResult(success=True, message_id=message_id)
 
-    async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
-        """Play a pre-synthesized audio file (hermes TTS tool path — no file attachment)."""
-        logger.info("[auricle] play_tts(): %s", audio_path)
-        await self._audio_output.play_file(Path(audio_path))
-        return SendResult(success=True)
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
+        pass  # no typing indicator on a voice device
 
     async def send_exec_approval(
         self,
@@ -468,54 +186,88 @@ class AuricleAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata=None,
     ) -> SendResult:
-        """Auto-decline dangerous commands — voice has no approval UI."""
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session_key, "deny")
         return SendResult(success=True)
 
-    async def send_typing(self, chat_id: str, metadata=None) -> None:
-        pass  # no typing indicator on a voice device
-
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": "Local Speaker", "type": "dm", "chat_id": CHAT_ID}
 
-    # ── Internal dispatch ──────────────────────────────────────────────────
+    # ── Ingress (receive loop) ──────────────────────────────────────────────
 
-    async def _dispatch(self, text: str) -> None:
-        """Route a transcript or internal command to the hermes gateway."""
-        logger.info("[auricle] _dispatch: %r", text)
-        if not self._message_handler:
-            return
+    async def _receive_loop(self) -> None:
+        ws = self._ws
+        try:
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                await self._handle_engine_event(msg)
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("[auricle] engine connection closed — scheduling reconnect")
+            self._ws        = None
+            self._client_id = None
+            self._mark_disconnected()
+            self._retry_task = asyncio.create_task(self._retry_loop())
 
-        now = time.monotonic()
-        if (
-            self._session_auto_clear
-            and self._last_dispatch_time is not None
-            and now - self._last_dispatch_time >= self._session_clear_after
-        ):
-            logger.info("[auricle] idle timeout exceeded — clearing session history")
-            self._pending_clear = True
-        self._last_dispatch_time = now
+    async def _handle_engine_event(self, msg: dict) -> None:
+        t = msg.get("t")
 
-        if self._pending_clear:
-            self._pending_clear = False
-            self._classifier.expect_command_response()
-            await self.handle_message(self._make_event("/new", internal=True))
+        if t == "utterance":
+            text = msg.get("text", "")
+            if not text or not self._message_handler:
+                return
+            # Session auto-clear: if the user has been silent for too long,
+            # clear the hermes session before dispatching the new utterance.
+            now = time.monotonic()
+            if (
+                self._session_auto_clear
+                and self._last_dispatch_time is not None
+                and now - self._last_dispatch_time >= self._session_clear_after
+            ):
+                logger.info("[auricle] idle timeout exceeded — clearing session history")
+                self._pending_clear = True
+            self._last_dispatch_time = now
 
-        if text == _CMD_CLEAR:
-            await self._egress.speak(TTS_CLEARED, priority=True)
-            self._classifier.expect_command_response()
-            await self.handle_message(self._make_event("/new", internal=True))
-            return
+            if self._pending_clear:
+                self._pending_clear = False
+                self._classifier.expect_command_response()
+                await self.handle_message(self._make_event("/new", internal=True))
 
-        if text == _CMD_STOP:
-            await self._egress.speak(TTS_STOPPED, priority=True)
-            self._classifier.expect_command_response()
-            await self.handle_message(self._make_event("/stop", internal=True))
-            return
+            self._classifier.reset_pending()
+            await self.handle_message(self._make_event(text, internal=False))
 
-        self._classifier.reset_pending()
-        await self.handle_message(self._make_event(text, internal=False))
+        elif t == "barge_in":
+            # Engine already stopped audio; no action needed on the connector side.
+            logger.info("[auricle] barge-in from engine")
+
+        elif t == "cmd":
+            name = msg.get("name")
+            if name == "new":
+                logger.info("[auricle] engine requests session clear → /new")
+                if self._message_handler:
+                    self._classifier.expect_command_response()
+                    await self.handle_message(self._make_event("/new", internal=True))
+            elif name == "stop":
+                logger.info("[auricle] engine requests stop → /stop")
+                if self._message_handler:
+                    self._classifier.expect_command_response()
+                    await self.handle_message(self._make_event("/stop", internal=True))
+
+        elif t == "state":
+            logger.debug(
+                "[auricle] engine state: %s (sleeping=%s muted=%s)",
+                msg.get("fsm"), msg.get("sleeping"), msg.get("muted"),
+            )
+
+        elif t == "error":
+            logger.error("[auricle] engine error (%s): %s", msg.get("code"), msg.get("message"))
+            self._set_fatal_error(
+                msg.get("code", "engine_error"),
+                msg.get("message", "unknown engine error"),
+                retryable=True,
+            )
 
     def _make_event(self, text: str, *, internal: bool) -> MessageEvent:
         return MessageEvent(
@@ -528,80 +280,18 @@ class AuricleAdapter(BasePlatformAdapter):
 
 # ── Plugin helpers ─────────────────────────────────────────────────────────
 
-def _parse_bool(value: str) -> bool:
-    return str(value).lower() in ("1", "true", "yes", "on")
-
-
-def _parse_sd_device(value: str | None):
-    """Convert an env var value to a sounddevice device specifier (int index, str name, or None)."""
-    if not value:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return value
-
-
-def _make_audio_input() -> AudioInput:
-    backend = os.getenv(ENV_AUDIO_INPUT, DEFAULT_AUDIO_INPUT).lower()
-    if backend == "sounddevice":
-        return SounddeviceInput(device=_parse_sd_device(os.getenv(ENV_SD_INPUT_DEVICE, DEFAULT_SD_INPUT_DEVICE)))
-    return ArecordInput(device=os.getenv(ENV_MIC_DEVICE, DEFAULT_MIC_DEVICE))
-
-
-def _make_audio_output() -> AudioOutput:
-    backend = os.getenv(ENV_AUDIO_OUTPUT, DEFAULT_AUDIO_OUTPUT).lower()
-    if backend == "sounddevice":
-        return SounddeviceOutput(device=_parse_sd_device(os.getenv(ENV_SD_OUTPUT_DEVICE, DEFAULT_SD_OUTPUT_DEVICE)))
-    return AplayOutput(device=os.getenv(ENV_SPEAKER_DEVICE, DEFAULT_SPEAKER_DEVICE))
-
-
 def check_requirements() -> bool:
     try:
-        import openwakeword  # noqa: F401
-        import numpy         # noqa: F401
+        import websockets  # noqa: F401
     except ImportError:
         return False
-    backend = os.getenv(ENV_STT_BACKEND, DEFAULT_STT_BACKEND).lower()
-    if backend == "whisper":
-        python_path = os.getenv(ENV_WHISPER_PYTHON)
-        if not python_path or not shutil.which(python_path):
-            return False
-    else:
-        try:
-            import vosk  # noqa: F401
-        except ImportError:
-            return False
-    if (os.getenv(ENV_AUDIO_INPUT, DEFAULT_AUDIO_INPUT).lower() == "sounddevice" or
-            os.getenv(ENV_AUDIO_OUTPUT, DEFAULT_AUDIO_OUTPUT).lower() == "sounddevice"):
-        try:
-            import sounddevice  # noqa: F401
-        except ImportError:
-            return False
     return True
 
 
 def validate_config(cfg) -> bool:
-    errors = []
-    backend = os.getenv(ENV_STT_BACKEND, DEFAULT_STT_BACKEND).lower()
-    if backend != "whisper":
-        vosk_path = Path(os.path.expanduser(os.getenv(ENV_VOSK_MODEL_PATH, DEFAULT_VOSK_MODEL_PATH)))
-        if not vosk_path.exists():
-            errors.append(f"Vosk model not found: {vosk_path}")
-    for env, default, label in [
-        (ENV_OWW_WAKEWORD_MODEL_PATH,  DEFAULT_OWW_WAKEWORD_MODEL_PATH,  "OWW wakeword model"),
-        (ENV_OWW_MELSPEC_MODEL_PATH,   DEFAULT_OWW_MELSPEC_MODEL_PATH,   "OWW melspec model"),
-        (ENV_OWW_EMBEDDING_MODEL_PATH, DEFAULT_OWW_EMBEDDING_MODEL_PATH, "OWW embedding model"),
-    ]:
-        p = Path(os.path.expanduser(os.getenv(env, default)))
-        if not p.exists():
-            errors.append(f"{label} not found: {p}")
-    missing = [str(a) for a in ALL_ASSETS if not a.exists()]
-    if missing:
-        errors.append(f"Missing audio assets: {', '.join(missing)}")
-    if errors:
-        for error in errors:
-            logger.warning("[auricle] validation error: %s", error)
+    url = os.getenv(ENV_ENGINE_WS_URL, DEFAULT_ENGINE_WS_URL)
+    if not url.startswith(("ws://", "wss://")):
+        logger.warning("[auricle] AURICLE_ENGINE_WS_URL does not look like a WebSocket URL: %s", url)
         return False
     return True
 
@@ -612,38 +302,19 @@ def is_connected(adapter=None) -> bool:
 
 def _env_enablement_fn():
     os.environ.setdefault(ENV_HOME_CHANNEL, CHAT_ID)
-    return {
-        "mic_device":   os.getenv(ENV_MIC_DEVICE, DEFAULT_MIC_DEVICE),
-        "tts_voice":    os.getenv(ENV_TTS_VOICE,  DEFAULT_TTS_VOICE),
-        "home_channel": {"chat_id": CHAT_ID},
-    }
+    return {"home_channel": {"chat_id": CHAT_ID}}
 
 
 def _apply_yaml_config_fn(yaml_cfg, platform_cfg):
-    # platform_cfg is already yaml_cfg["auricle"] — the hook pre-slices it.
     auricle_cfg = platform_cfg if isinstance(platform_cfg, dict) else {}
     if not auricle_cfg:
         return None
     updates = {}
     mappings = [
-        ("mic_device",               ENV_MIC_DEVICE,               DEFAULT_MIC_DEVICE),
-        ("speaker_device",           ENV_SPEAKER_DEVICE,           DEFAULT_SPEAKER_DEVICE),
-        ("tts_voice",                ENV_TTS_VOICE,                DEFAULT_TTS_VOICE),
-        ("active_listen_duration",   ENV_ACTIVE_LISTEN_DURATION,   str(DEFAULT_ACTIVE_LISTEN_DURATION)),
-        ("session_resume",           ENV_SESSION_RESUME,           str(DEFAULT_SESSION_RESUME)),
-        ("mute",                     ENV_MUTE,                     str(DEFAULT_MUTE)),
-        ("stt_backend",              ENV_STT_BACKEND,              DEFAULT_STT_BACKEND),
-        ("vosk_model_path",          ENV_VOSK_MODEL_PATH,          DEFAULT_VOSK_MODEL_PATH),
-        ("whisper_model_id",         ENV_WHISPER_MODEL_ID,         DEFAULT_WHISPER_MODEL_ID),
-        ("whisper_python",           ENV_WHISPER_PYTHON,           ""),
-        ("oww_wakeword_model_path",  ENV_OWW_WAKEWORD_MODEL_PATH,  DEFAULT_OWW_WAKEWORD_MODEL_PATH),
-        ("oww_melspec_model_path",   ENV_OWW_MELSPEC_MODEL_PATH,   DEFAULT_OWW_MELSPEC_MODEL_PATH),
-        ("oww_embedding_model_path", ENV_OWW_EMBEDDING_MODEL_PATH, DEFAULT_OWW_EMBEDDING_MODEL_PATH),
-        ("sleep_timeout",            ENV_SLEEP_TIMEOUT,            str(DEFAULT_SLEEP_TIMEOUT)),
-        ("sleep_wake_sensitivity",   ENV_SLEEP_WAKE_SENSITIVITY,   str(DEFAULT_SLEEP_WAKE_SENSITIVITY)),
-        ("sleep_flux_threshold",     ENV_SLEEP_FLUX_THRESHOLD,     str(DEFAULT_SLEEP_FLUX_THRESHOLD)),
-        ("session_auto_clear",       ENV_SESSION_AUTO_CLEAR,       str(DEFAULT_SESSION_AUTO_CLEAR)),
-        ("session_clear_after",      ENV_SESSION_CLEAR_AFTER,      str(DEFAULT_SESSION_CLEAR_AFTER)),
+        ("session_resume",    ENV_SESSION_RESUME,    str(DEFAULT_SESSION_RESUME)),
+        ("session_auto_clear", ENV_SESSION_AUTO_CLEAR, str(DEFAULT_SESSION_AUTO_CLEAR)),
+        ("session_clear_after", ENV_SESSION_CLEAR_AFTER, str(DEFAULT_SESSION_CLEAR_AFTER)),
+        ("engine_ws_url",     ENV_ENGINE_WS_URL,     DEFAULT_ENGINE_WS_URL),
     ]
     for yaml_key, env_key, _ in mappings:
         if yaml_key in auricle_cfg and not os.getenv(env_key):
@@ -662,20 +333,26 @@ async def _standalone_send(
     media_files=None,
     force_document: bool = False,
 ) -> dict:
-    """Out-of-process delivery for cron/notification jobs."""
-    import re
-    voice = os.getenv(ENV_TTS_VOICE, DEFAULT_TTS_VOICE)
-    clean = re.sub(r'[*_`#\[\]()]', "", message)[:TTS_MAX_CHARS].strip()
+    """Cron/proactive delivery: connect to the engine and play notify + TTS."""
+    clean = _MARKDOWN_RE.sub("", message)[:TTS_MAX_CHARS].strip()
     if not clean:
         return {"success": True}
+    engine_url = os.getenv(ENV_ENGINE_WS_URL, DEFAULT_ENGINE_WS_URL)
     try:
-        audio_out = _make_audio_output()
-        await audio_out.play_file(ASSET_NOTIFY)
-        await asyncio.sleep(PROACTIVE_PRE_SPEECH_PAUSE)
-        tts = EdgeTTSProvider(voice)
-        mp3_bytes = b"".join([chunk async for chunk in tts.stream_audio(clean)])
-        handle = await audio_out.play_bytes(mp3_bytes)
-        await handle.wait()
+        async with websockets.connect(engine_url) as ws:
+            raw = await asyncio.wait_for(ws.recv(), timeout=10)
+            msg = json.loads(raw)
+            if msg.get("t") != "ready":
+                return {"error": f"unexpected engine handshake: {msg}"}
+            client_id = msg["client_id"]
+            await ws.send(json.dumps({"t": "notify", "client_id": client_id, "text": clean}))
+            try:
+                done_raw = await asyncio.wait_for(ws.recv(), timeout=30)
+                done_msg = json.loads(done_raw)
+                if done_msg.get("t") != "notify_done":
+                    logger.warning("[auricle] unexpected response to notify: %r", done_msg)
+            except asyncio.TimeoutError:
+                logger.warning("[auricle] notify_done not received within 30s timeout")
     except Exception as exc:
         return {"error": str(exc)}
     return {"success": True}
@@ -702,12 +379,8 @@ def register(ctx) -> None:
         pii_safe=True,
         allow_update_command=False,
         install_hint=(
-            "vosk backend (default): pip install vosk openwakeword numpy edge-tts\n"
-            "whisper backend:\n"
-            "  1. Create a Python 3.10 venv: python3.10 -m venv /path/to/whisper-venv\n"
-            "  2. Install deps:  /path/to/whisper-venv/bin/pip install torch transformers accelerate webrtcvad\n"
-            "  3. In hermes venv: pip install openwakeword numpy edge-tts\n"
-            "  4. Set AURICLE_WHISPER_PYTHON=/path/to/whisper-venv/bin/python\n"
-            "System packages: alsa-utils (arecord, aplay), ffmpeg"
+            "Requires the auricle-engine to be running and reachable.\n"
+            "Default: ws://localhost:57310 (set AURICLE_ENGINE_WS_URL to override).\n"
+            "See https://github.com/nousresearch/auricle-engine for engine setup."
         ),
     )
