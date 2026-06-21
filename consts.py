@@ -1,9 +1,11 @@
 # Connector-only constants. Audio, STT, TTS, OWW, and sleep constants have
 # moved to the auricle-engine repo.
 
-# ── Engine connection ────────────────────────────────────────────────────────
-ENV_ENGINE_WS_URL     = "AURICLE_ENGINE_WS_URL"
-DEFAULT_ENGINE_WS_URL = "ws://localhost:57310"
+# ── WebSocket server (connector listens; engine connects) ─────────────────────
+ENV_CONNECTOR_HOST     = "AURICLE_CONNECTOR_HOST"
+ENV_CONNECTOR_PORT     = "AURICLE_CONNECTOR_PORT"
+DEFAULT_CONNECTOR_HOST = "localhost"
+DEFAULT_CONNECTOR_PORT = 57310
 
 # ── Env var names ────────────────────────────────────────────────────────────
 ENV_SESSION_RESUME       = "AURICLE_SESSION_RESUME"

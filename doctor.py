@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""hermes-auricle connector doctor — checks that the connector can reach auricle-engine.
+"""hermes-auricle connector doctor — checks connector configuration.
 
 Run from anywhere:
     python /path/to/hermes-auricle/doctor.py
@@ -9,16 +9,15 @@ doctor in the auricle-engine repo instead.
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import os
+import socket
 import sys
 from pathlib import Path
 
 _PLUGIN_DIR = Path(__file__).parent
 sys.path.insert(0, str(_PLUGIN_DIR))
 
-from consts import DEFAULT_ENGINE_WS_URL, ENV_ENGINE_WS_URL
+from consts import DEFAULT_CONNECTOR_HOST, DEFAULT_CONNECTOR_PORT, ENV_CONNECTOR_HOST, ENV_CONNECTOR_PORT
 
 # ── ANSI output ────────────────────────────────────────────────────────────
 
@@ -50,32 +49,23 @@ except ImportError:
     _fail("websockets not found — pip install websockets")
     _failures.append("websockets")
 
-# ── B: Engine reachability ─────────────────────────────────────────────────
+# ── B: Port availability ───────────────────────────────────────────────────
 
-_hdr("B. Engine reachability")
+_hdr("B. Connector server port")
 
-engine_url = os.getenv(ENV_ENGINE_WS_URL, DEFAULT_ENGINE_WS_URL)
-print(f"  Engine URL: {engine_url}")
+host = os.getenv(ENV_CONNECTOR_HOST, DEFAULT_CONNECTOR_HOST)
+port = int(os.getenv(ENV_CONNECTOR_PORT, str(DEFAULT_CONNECTOR_PORT)))
+print(f"  Listening address: ws://{host}:{port}")
 
-
-async def _probe_engine(url: str) -> tuple[bool, str]:
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        import websockets as ws_mod
-        async with ws_mod.connect(url, open_timeout=5) as ws:
-            raw = await asyncio.wait_for(ws.recv(), timeout=5)
-            msg = json.loads(raw)
-            if msg.get("t") == "ready":
-                return True, f"client_id={msg.get('client_id')}"
-            return False, f"unexpected message: {msg}"
-    except Exception as exc:
-        return False, str(exc)
-
-
-try:
-    ok, detail = asyncio.run(_probe_engine(engine_url))
-    _check("auricle-engine reachable", ok, detail)
-except Exception as exc:
-    _check("auricle-engine reachable", False, str(exc))
+        s.bind((host if host != "0.0.0.0" else "127.0.0.1", port))
+        _ok(f"Port {port} is available")
+    except OSError as exc:
+        _fail(f"Port {port} is already in use — {exc}")
+        _failures.append(f"port {port}")
+        _warn("If hermes gateway is already running this is expected")
 
 # ── C: Classifier sanity ───────────────────────────────────────────────────
 

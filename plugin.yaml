@@ -1,18 +1,21 @@
 name: hermes-auricle
 label: Auricle
 kind: platform
-version: 0.2.0
+version: 0.3.0
 description: >
-  Hermes connector for auricle-engine. Bridges hermes-agent to a running
-  auricle-engine instance over WebSocket. The engine handles all audio
-  processing (wakeword, STT, TTS); this plugin contains only the hermes
-  platform adapter logic.
+  Hermes connector for auricle-engine. Opens a WebSocket server that the
+  engine connects to. Forwards agent responses as TTS and dispatches
+  voice utterances as hermes messages.
 author: Justin Pacella
 
 optional_env:
-  - name: AURICLE_ENGINE_WS_URL
-    description: "WebSocket URL of the auricle-engine server (default: ws://localhost:57310)"
-    prompt: "auricle-engine WebSocket URL"
+  - name: AURICLE_CONNECTOR_HOST
+    description: "Host to bind the WebSocket server on (default: localhost). Set to 0.0.0.0 to accept engine connections from remote machines."
+    prompt: "Connector bind host"
+    password: false
+  - name: AURICLE_CONNECTOR_PORT
+    description: "Port to listen on for engine connections (default: 57310)"
+    prompt: "Connector port"
     password: false
   - name: AURICLE_SESSION_RESUME
     description: "Resume existing session on hermes restart (default: true)"

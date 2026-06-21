@@ -56,7 +56,8 @@ That's it. All audio dependencies (vosk, openwakeword, edge-tts, torch, etc.) be
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `AURICLE_ENGINE_WS_URL` | `ws://localhost:57310` | WebSocket URL of the auricle-engine server |
+| `AURICLE_CONNECTOR_HOST` | `localhost` | Host to bind the WebSocket server on. Set to `0.0.0.0` to accept engine connections from remote machines. |
+| `AURICLE_CONNECTOR_PORT` | `57310` | Port to listen on for engine connections. |
 | `AURICLE_SESSION_RESUME` | `true` | Resume existing session on hermes restart |
 | `AURICLE_SESSION_AUTO_CLEAR` | `true` | Clear session history after a period of inactivity |
 | `AURICLE_SESSION_CLEAR_AFTER` | `3600` | Seconds of inactivity before session history is cleared |
@@ -65,7 +66,8 @@ These can also be set under an `auricle:` key in `~/.hermes/config.yaml`:
 
 ```yaml
 auricle:
-  engine_ws_url: ws://192.168.1.42:57310
+  connector_host: 0.0.0.0
+  connector_port: 57310
   session_resume: true
   session_auto_clear: true
   session_clear_after: 3600
