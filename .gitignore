@@ -221,7 +221,5 @@ __marimo__/
 .local
 .local/
 
-# Models
-*.onnx
-*.tflite
-models/vosk-model
+# Models directory (engine-side; no longer used by this connector)
+models/
